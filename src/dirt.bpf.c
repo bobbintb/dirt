@@ -58,6 +58,9 @@ const volatile char  debug[DBG_LEN_MAX];
 static __attribute__((noinline)) void debug_dump_stack(void *ctx, const char *func);
 static __attribute__((noinline)) bool debug_file_is_tp(char *filename);
 static __attribute__((noinline)) bool debug_proc(char *comm, char *filename);
+static __attribute__((noinline)) void build_event_filepath(struct RECORD_FS *r, struct dentry *current_dentry, const __u8 *pathnode_cache[FILEPATH_NODE_MAX]);
+static __attribute__((noinline)) bool check_path_filter(const char filepath[FILEPATH_LEN_MAX], const char prefix[FILEPATH_LEN_MAX]);
+
 
 // Helper function to build the filepath
 static __attribute__((noinline)) void build_event_filepath(struct RECORD_FS *r, struct dentry *current_dentry, const __u8 *pathnode_cache[FILEPATH_NODE_MAX]) {
@@ -77,7 +80,7 @@ static __attribute__((noinline)) void build_event_filepath(struct RECORD_FS *r, 
             break;
         dentry_ptr_for_path_walk = dparent;
     }
-    num_nodes = 0; // Reset before use
+    num_nodes = 0;
     if (loop_cnt < FILEPATH_NODE_MAX)
         num_nodes = loop_cnt;
 
@@ -128,6 +131,22 @@ path_construction_done_local:;
     }
 }
 
+// Helper function to check path prefix filter
+static __attribute__((noinline)) bool check_path_filter(const char filepath[FILEPATH_LEN_MAX], const char prefix[FILEPATH_LEN_MAX]) {
+    if (prefix[0] == '\0') { // No filter set
+        return true;
+    }
+    for (int i = 0; i < FILEPATH_LEN_MAX; ++i) {
+        if (prefix[i] == '\0') { // End of prefix string, means filepath started with it
+            return true;
+        }
+        if (filepath[i] == '\0' || filepath[i] != prefix[i]) { // Filepath is shorter or mismatch
+            return false;
+        }
+    }
+    return true; // Should be reached if both are FILEPATH_LEN_MAX and match fully
+}
+
 
 /* handle all filesystem events for aggregation */
 static __attribute__((noinline)) int handle_fs_event(void *ctx, const struct FS_EVENT_INFO *event) {
@@ -135,7 +154,7 @@ static __attribute__((noinline)) int handle_fs_event(void *ctx, const struct FS_
     struct inode       *inode;
     struct RECORD_FS   *r;
     struct STATS       *s;
-    const __u8         *pathnode[FILEPATH_NODE_MAX] = {0}; // Cache for path components
+    const __u8         *pathnode[FILEPATH_NODE_MAX] = {0};
     char                filename_on_stack[FILENAME_LEN_MAX] = {0};
     char               *func;
     bool                agg_end;
@@ -146,7 +165,7 @@ static __attribute__((noinline)) int handle_fs_event(void *ctx, const struct FS_
     __u32               zero = 0;
     __u32               idx;
     __u32               ino;
-    __u32               loop_cnt; // For general loops, not path construction
+    __u32               loop_cnt;
 
     if (event->index == I_ACCESS || event->index == I_ATTRIB) {
         return 0;
@@ -193,23 +212,10 @@ static __attribute__((noinline)) int handle_fs_event(void *ctx, const struct FS_
         bpf_probe_read_kernel_str(r->filename, sizeof(r->filename), filename_on_stack);
         r->isize_first = BPF_CORE_READ(inode, i_size);
 
-        // Call helper to build filepath
         build_event_filepath(r, current_dentry, pathnode);
 
-        if (filter_path_prefix[0] != '\0') {
-            bool match = true;
-            for (int i = 0; i < FILEPATH_LEN_MAX; ++i) {
-                if (filter_path_prefix[i] == '\0') {
-                    break;
-                }
-                if (r->filepath[i] == '\0' || r->filepath[i] != filter_path_prefix[i]) {
-                    match = false;
-                    break;
-                }
-            }
-            if (!match) {
-                return 0;
-            }
+        if (!check_path_filter(r->filepath, filter_path_prefix)) {
+            return 0;
         }
 
         r->events = 0;
@@ -412,14 +418,11 @@ static __attribute__((noinline)) bool debug_file_is_tp(char *filename) {
     char tp[] = "trace_pipe";
     int  cnt_debug;
     if (filename) {
-        for (cnt_debug = 0; cnt_debug < DBG_LEN_MAX -1 ; cnt_debug++) { // Check up to DBG_LEN_MAX-1 to allow for null terminator
-            if (tp[cnt_debug] == '\0') return filename[cnt_debug] == '\0'; // True if filename also ends
+        for (cnt_debug = 0; cnt_debug < DBG_LEN_MAX -1 ; cnt_debug++) {
+            if (tp[cnt_debug] == '\0') return filename[cnt_debug] == '\0';
             if (filename[cnt_debug] == '\0' || filename[cnt_debug] != tp[cnt_debug])
                 return false;
         }
-        // If loop completes, means first DBG_LEN_MAX-1 chars matched.
-        // If tp is shorter than DBG_LEN_MAX-1, this logic is covered by tp[cnt_debug]=='\0'.
-        // If tp is DBG_LEN_MAX-1 or longer, check current char.
         return filename[cnt_debug] == tp[cnt_debug];
     }
     return false;
@@ -428,7 +431,7 @@ static __attribute__((noinline)) bool debug_file_is_tp(char *filename) {
 static __attribute__((noinline)) bool debug_proc(char *comm, char *filename) {
     int cnt_debug;
     if (!comm) {
-        if (debug[0] == 'q' && debug[1] == '\0') // Check if debug is just "q"
+        if (debug[0] == 'q' && debug[1] == '\0')
             return true;
         else
             return false;
