@@ -51,15 +51,17 @@ const volatile pid_t pid_self SEC(".rodata");
 const volatile pid_t pid_shell SEC(".rodata");
 const volatile char filter_path_prefix[FILEPATH_LEN_MAX] SEC(".rodata");
 volatile __u32       monitor = MONITOR_NONE;
+const volatile char  debug[DBG_LEN_MAX];
 
-/* debug helpers for process debugging and kernel stack */
-static __always_inline void debug_dump_stack(void *, const char *);
-static __always_inline bool debug_proc(char *, char *);
-static __always_inline bool debug_file_is_tp(char *);
-const volatile char         debug[DBG_LEN_MAX];
+
+/* Forward declarations for debug functions if needed, or ensure they are static */
+static __attribute__((noinline)) void debug_dump_stack(void *ctx, const char *func);
+static __attribute__((noinline)) bool debug_file_is_tp(char *filename);
+static __attribute__((noinline)) bool debug_proc(char *comm, char *filename);
+
 
 /* handle all filesystem events for aggregation */
-static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO *event) {
+static __attribute__((noinline)) int handle_fs_event(void *ctx, const struct FS_EVENT_INFO *event) {
     struct dentry      *dentry_ptr_for_path_walk;
     struct dentry      *dentry_old;
     struct inode       *inode;
@@ -143,7 +145,6 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
 
         __builtin_memset(r->filepath, 0, sizeof(r->filepath));
         offset = 0;
-        // Construct directory path in r->filepath
         for (loop_cnt = num_nodes; loop_cnt > 0; loop_cnt--) {
             if (pathnode[loop_cnt] && offset < (sizeof(r->filepath) - DNAME_INLINE_LEN - 1) ) {
                 char component_buf[DNAME_INLINE_LEN];
@@ -151,7 +152,7 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
                 len_long = bpf_probe_read_kernel_str(component_buf, DNAME_INLINE_LEN, (void *)pathnode[loop_cnt]);
 
                 if (len_long > 1) {
-                    #pragma unroll
+                    // No #pragma unroll
                     for (int k = 0; k < DNAME_INLINE_LEN - 1; ++k) {
                         if (k >= (len_long - 1)) {
                             break;
@@ -190,7 +191,7 @@ path_construction_done:;
 
         if (filter_path_prefix[0] != '\0') {
             bool match = true;
-            #pragma unroll
+            // No #pragma unroll
             for (int i = 0; i < FILEPATH_LEN_MAX; ++i) {
                 if (filter_path_prefix[i] == '\0') {
                     break;
@@ -386,47 +387,62 @@ int BPF_KPROBE(security_inode_unlink, struct inode *dir, struct dentry *dentry) 
 }
 
 /* DEBUG */
-static long                 debug_stack[MAX_STACK_TRACE_DEPTH] = {0};
-static __always_inline void debug_dump_stack(void *ctx, const char *func) {
+static __attribute__((noinline)) void debug_dump_stack(void *ctx, const char *func) {
+    static long debug_stack_arr[MAX_STACK_TRACE_DEPTH] = {0}; // Renamed and static
     long                kstacklen;
     __u32               cnt_debug;
 
-    kstacklen = bpf_get_stack(ctx, debug_stack, MAX_STACK_TRACE_DEPTH * sizeof(long), 0);
+    kstacklen = bpf_get_stack(ctx, debug_stack_arr, MAX_STACK_TRACE_DEPTH * sizeof(long), 0);
     if (kstacklen > 0) {
         bpf_printk("KERNEL STACK (%u): %s  ", (kstacklen / sizeof(long)), func);
         for (cnt_debug = 0; cnt_debug < MAX_STACK_TRACE_DEPTH; cnt_debug++) {
-            if (kstacklen > cnt_debug * sizeof(long))
-                bpf_printk("  %pB", (void *)debug_stack[cnt_debug]);
+            if (kstacklen > cnt_debug * sizeof(long)) // Check against kstacklen, not sizeof(debug_stack_arr)
+                bpf_printk("  %pB", (void *)debug_stack_arr[cnt_debug]);
         }
     }
 }
 
-bool debug_file_is_tp(char *filename) {
+static __attribute__((noinline)) bool debug_file_is_tp(char *filename) {
     char tp[] = "trace_pipe";
     int  cnt_debug;
     if (filename) {
-        for (cnt_debug = 0; cnt_debug < DBG_LEN_MAX; cnt_debug++)
-            if (filename[cnt_debug] != tp[cnt_debug])
-                break;
-            else if (cnt_debug == sizeof(tp) - 1)
-                return true;
+        // Bounded loop for string comparison
+        for (cnt_debug = 0; cnt_debug < sizeof(tp) -1 && cnt_debug < DBG_LEN_MAX; cnt_debug++) {
+            if (filename[cnt_debug] == '\0' || filename[cnt_debug] != tp[cnt_debug])
+                return false; // Mismatch or end of filename
+        }
+        // If loop completed and filename is at least as long as tp and matches
+        if (cnt_debug == (sizeof(tp) - 1) && (filename[cnt_debug] == '\0' || filename[cnt_debug] == tp[cnt_debug])) {
+             return true;
+        }
+         // Case where filename is exactly "trace_pipe" and loop finished due to cnt_debug < DBG_LEN_MAX
+        if (cnt_debug == (sizeof(tp) -1) && filename[cnt_debug-1] == tp[cnt_debug-1] && filename[cnt_debug] == '\0'){
+            return true;
+        }
+
+
     }
     return false;
 }
 
-bool debug_proc(char *comm, char *filename) {
+static __attribute__((noinline)) bool debug_proc(char *comm, char *filename) {
     int cnt_debug;
     if (!comm) {
-        if (debug[0] == 'q' && !debug[1])
+        if (debug[0] == 'q' && !debug[1]) // Check if debug is just "q"
             return true;
         else
             return false;
     }
-    if (debug[0] != '*')
-        for (cnt_debug = 0; cnt_debug < DBG_LEN_MAX; cnt_debug++)
-            if (!comm[0] || comm[cnt_debug] != debug[cnt_debug])
+    if (debug[0] != '*') { // If not wildcard
+        for (cnt_debug = 0; cnt_debug < DBG_LEN_MAX; cnt_debug++) {
+            if (debug[cnt_debug] == '\0') return true; // Prefix match: debug string ended
+            if (comm[cnt_debug] == '\0' || comm[cnt_debug] != debug[cnt_debug]) // Comm string ended or mismatch
                 return false;
-    if (debug_file_is_tp(filename))
+        }
+        // If loop finishes, it means comm starts with debug and debug is DBG_LEN_MAX long
+    }
+    // Check for trace_pipe, assuming filename is a valid pointer
+    if (filename && debug_file_is_tp(filename))
         return false;
     return true;
 }
