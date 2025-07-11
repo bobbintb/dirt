@@ -80,6 +80,7 @@ static char usage_str[] =
     "                             Print eBPF load and co-re messages on start of eBPF program\n"
     "                             to stderr console\n"
     "  -T TOKEN                 Token specified on host to be included in json output\n"
+    "  -P PATH_PREFIX           Only report events for files under this path prefix\n"
     "  -l, --legend             Show legend\n"
     "  -h, --help               Show help\n"
     "      --version            Show version\n"
@@ -118,6 +119,7 @@ static struct option longopts[] = {{"legend", no_argument, NULL, 'l'},
                                    {"help", no_argument, NULL, 'h'},
                                    {"version", no_argument, (int *)&opt_version, 1},
                                    {"unix-socket", required_argument, NULL, 'x'},
+                                   {"path-prefix", required_argument, NULL, 'P'},
                                    {0, 0, 0, 0}};
 
 /* define globals */
@@ -138,6 +140,7 @@ static struct CONFIG {
     bool  verbose;
     char  token[TOKEN_LEN_MAX];
     char  debug[DBG_LEN_MAX];
+    char  filter_path_prefix[FILEPATH_LEN_MAX];
 } config = {0};
 
 
@@ -380,7 +383,7 @@ int main(int argc, char **argv) {
     uname(&local_utsn);
 
 
-    while ((opt = getopt_long(argc, argv, ":e:o:x:qdT:lhVD:", longopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, ":e:o:x:qdT:P:lhVD:", longopts, NULL)) != -1) {
         switch (opt) {
         case 'e':
             config.agg_events_max = atoi(optarg);
@@ -422,6 +425,15 @@ int main(int argc, char **argv) {
             if (strlen(optarg) > sizeof(config.token) - 1)
                 usage("Invalid token with too many characters specified");
             strncpy(config.token, optarg, sizeof(config.token) - 1);
+            argn += 2;
+            break;
+        case 'P':
+            if (strlen(optarg) >= sizeof(config.filter_path_prefix))
+                usage("Path prefix filter too long");
+            strncpy(config.filter_path_prefix, optarg, sizeof(config.filter_path_prefix) - 1);
+            // Ensure null termination is already handled by strncpy if optarg is shorter,
+            // but explicitly set last char if optarg is exactly max length or longer (though caught by strlen).
+            config.filter_path_prefix[sizeof(config.filter_path_prefix) - 1] = '\0';
             argn += 2;
             break;
         case 'l':
@@ -486,6 +498,16 @@ int main(int argc, char **argv) {
     skel->rodata->ts_start = (uint64_t)((spec.tv_sec * (uint64_t)1e9) + spec.tv_nsec);
     skel->rodata->agg_events_max = config.agg_events_max;
     memcpy(skel->rodata->debug, config.debug, DBG_LEN_MAX);
+
+    // Initialize filter_path_prefix with zeros then copy
+    memset((void*)skel->rodata->filter_path_prefix, 0, FILEPATH_LEN_MAX);
+    if (config.filter_path_prefix[0]) { // Check if a prefix was actually provided
+        strncpy((char*)skel->rodata->filter_path_prefix, config.filter_path_prefix, FILEPATH_LEN_MAX -1);
+        // strncpy ensures null termination if src is shorter than FILEPATH_LEN_MAX-1
+        // If src is longer or equal, it might not null terminate, so ensure it.
+        ((char*)skel->rodata->filter_path_prefix)[FILEPATH_LEN_MAX - 1] = '\0';
+    }
+
     skel->rodata->pid_self = getpid();
 
     sprintf(cmd, "$(command -v cat) /proc/%u/stat | cut -d\" \" -f4", getppid());

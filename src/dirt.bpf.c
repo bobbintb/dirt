@@ -45,10 +45,11 @@ struct {
 } stats SEC(".maps");
 
 /* glabal variables shared with userspace */
-const volatile __u64 ts_start;
-const volatile __u32 agg_events_max;
-const volatile pid_t pid_self;
-const volatile pid_t pid_shell;
+const volatile __u64 ts_start SEC(".rodata");
+const volatile __u32 agg_events_max SEC(".rodata");
+const volatile pid_t pid_self SEC(".rodata");
+const volatile pid_t pid_shell SEC(".rodata");
+const volatile char filter_path_prefix[FILEPATH_LEN_MAX] SEC(".rodata"); // Added for path filtering
 volatile __u32       monitor = MONITOR_NONE;
 
 /* debug helpers for process debugging and kernel stack */
@@ -60,7 +61,7 @@ const volatile char         debug[DBG_LEN_MAX];
 /* handle all filesystem events for aggregation */
 static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO *event) {
     // struct task_struct *task = (struct task_struct *)bpf_get_current_task();
-    struct dentry      *dentry;
+    struct dentry      *dentry_ptr_for_path_walk; // Renamed to avoid confusion
     struct dentry      *dentry_old;
     struct inode       *inode;
     struct dentry      *dparent;
@@ -95,12 +96,13 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
         return 0;
 
     index = event->index;
-    dentry = event->dentry;
+    // dentry variable here is the primary dentry for the event
+    struct dentry *current_dentry = event->dentry;
     dentry_old = event->dentry_old;
     func = event->func;
 
-    inode = BPF_CORE_READ((dentry_old ? dentry_old : dentry), d_inode);
-    bpf_probe_read_kernel_str(filename, sizeof(filename), BPF_CORE_READ(dentry, d_name.name));
+    inode = BPF_CORE_READ((dentry_old ? dentry_old : current_dentry), d_inode);
+    bpf_probe_read_kernel_str(filename, sizeof(filename), BPF_CORE_READ(current_dentry, d_name.name));
     if (!inode || !filename[0])
         return 0;
 
@@ -116,7 +118,7 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
     if (r) {
         if (fsevt[index].value == FS_MOVED_TO) {
             __builtin_memset(r->filename_to - 1, 0, sizeof(r->filename_to) + 1);
-            bpf_probe_read_kernel_str(&r->filename_to, sizeof(r->filename_to), BPF_CORE_READ(dentry, d_name.name));
+            bpf_probe_read_kernel_str(&r->filename_to, sizeof(r->filename_to), BPF_CORE_READ(current_dentry, d_name.name));
         }
         r->rc.ts = ts_event;
     } else {
@@ -129,32 +131,84 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
 
         r->ino = ino;
         __builtin_memset(r->filename, 0, sizeof(r->filename));
-        bpf_probe_read_kernel_str(&r->filename, sizeof(r->filename), BPF_CORE_READ(dentry, d_name.name));
+        // Use current_dentry for filename, not dentry_ptr_for_path_walk
+        bpf_probe_read_kernel_str(&r->filename, sizeof(r->filename), BPF_CORE_READ(current_dentry, d_name.name));
         r->isize_first = BPF_CORE_READ(inode, i_size);
 
+        // Path construction logic:
+        // Initialize dentry_ptr_for_path_walk with the actual dentry of the event.
+        dentry_ptr_for_path_walk = current_dentry;
         for (cnt = 0; cnt < FILEPATH_NODE_MAX; cnt++) {
-            dname = BPF_CORE_READ(dentry, d_name.name);
-            dparent = BPF_CORE_READ(dentry, d_parent);
+            dname = BPF_CORE_READ(dentry_ptr_for_path_walk, d_name.name);
+            dparent = BPF_CORE_READ(dentry_ptr_for_path_walk, d_parent);
             pathnode[cnt] = dname;
-            if (BPF_CORE_READ(dentry, d_inode, i_ino) == BPF_CORE_READ(dparent, d_inode, i_ino))
+            // Stop if dentry is its own parent (root or mount point)
+            if (BPF_CORE_READ(dentry_ptr_for_path_walk, d_inode, i_ino) == BPF_CORE_READ(dparent, d_inode, i_ino))
                 break;
-            dentry = dparent;
+            dentry_ptr_for_path_walk = dparent; // Move to parent for next iteration
         }
         num_nodes = 0;
-        if (cnt < FILEPATH_NODE_MAX)
+        if (cnt < FILEPATH_NODE_MAX) // If loop didn't overrun
             num_nodes = cnt;
+
         __builtin_memset(r->filepath, 0, sizeof(r->filepath));
-        for (cnt = num_nodes; cnt > 0; cnt--) {
-            if (pathnode[cnt] && offset < (sizeof(r->filepath) - DNAME_INLINE_LEN)) {
-                len = bpf_probe_read_kernel_str(&r->filepath[offset], sizeof(r->filepath) - DNAME_INLINE_LEN,
-                                                (void *)pathnode[cnt]);
-                if (len && offset < (sizeof(r->filepath)) - len) {
-                    offset += (len - 1);
-                    if (cnt != num_nodes && offset < (sizeof(r->filepath))) {
+        // Traverse backwards to construct path: /path/to/file
+        for (cnt = num_nodes; cnt > 0; cnt--) { // Iterate from root-most component down to direct parent
+            if (pathnode[cnt] && offset < (sizeof(r->filepath) - DNAME_INLINE_LEN -1)) { // -1 for potential slash
+                // Add leading slash for the first component (root or mount point)
+                if (offset == 0 && pathnode[cnt][0] != '/') {
+                     //This logic is tricky as pathnode[cnt] is just the name, not full path.
+                     // The original code implies pathnode[cnt] is just the segment.
+                     // A leading '/' should be added only once if it's not already there from d_name.name of root.
+                     // For simplicity, we assume d_name.name of root might be '/' or just the name.
+                     // The loop below will add '/' between components.
+                }
+
+                len = bpf_probe_read_kernel_str(&r->filepath[offset], sizeof(r->filepath) - offset, (void *)pathnode[cnt]);
+                if (len > 1 && offset < (sizeof(r->filepath) -1) ) { // len > 1 to account for null terminator
+                    offset += (len - 1); // Do not count the null terminator from bpf_probe_read_kernel_str
+                    if (offset < (sizeof(r->filepath) -1) ) { // Check if space for slash
                         r->filepath[offset] = '/';
                         offset++;
                     }
+                } else if (len == 1 && pathnode[cnt][0] == '/') { // Case for root "/"
+                     r->filepath[offset] = '/';
+                     offset++;
                 }
+            }
+        }
+        // Add the actual filename itself (pathnode[0])
+        if (pathnode[0] && offset < (sizeof(r->filepath) - DNAME_INLINE_LEN)) {
+             len = bpf_probe_read_kernel_str(&r->filepath[offset], sizeof(r->filepath) - offset, (void *)pathnode[0]);
+             if (len > 1) {
+                 offset += (len -1);
+             }
+        }
+        // Ensure null termination if path is full
+        if (offset >= sizeof(r->filepath)) {
+            r->filepath[sizeof(r->filepath)-1] = '\0';
+        } else {
+            r->filepath[offset] = '\0'; // Null terminate the constructed path
+        }
+
+
+        // Path Filtering Logic
+        if (filter_path_prefix[0] != '\0') { // Check if a filter prefix is active
+            bool match = true;
+            // Bounded loop for prefix comparison
+            #pragma unroll
+            for (int i = 0; i < FILEPATH_LEN_MAX; ++i) {
+                if (filter_path_prefix[i] == '\0') { // Prefix is shorter or equal, and all matched so far
+                    break;
+                }
+                if (r->filepath[i] == '\0' || r->filepath[i] != filter_path_prefix[i]) {
+                    // Filepath is shorter than prefix, or mismatch
+                    match = false;
+                    break;
+                }
+            }
+            if (!match) {
+                return 0; // Path does not match prefix, drop event
             }
         }
 
