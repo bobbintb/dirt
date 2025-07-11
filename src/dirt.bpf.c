@@ -54,36 +54,99 @@ volatile __u32       monitor = MONITOR_NONE;
 const volatile char  debug[DBG_LEN_MAX];
 
 
-/* Forward declarations for debug functions if needed, or ensure they are static */
+/* Forward declarations */
 static __attribute__((noinline)) void debug_dump_stack(void *ctx, const char *func);
 static __attribute__((noinline)) bool debug_file_is_tp(char *filename);
 static __attribute__((noinline)) bool debug_proc(char *comm, char *filename);
 
+// Helper function to build the filepath
+static __attribute__((noinline)) void build_event_filepath(struct RECORD_FS *r, struct dentry *current_dentry, const __u8 *pathnode_cache[FILEPATH_NODE_MAX]) {
+    struct dentry *dentry_ptr_for_path_walk = current_dentry;
+    const __u8 *dname;
+    struct dentry *dparent;
+    __u32 num_nodes = 0;
+    __u32 offset = 0;
+    long len_long = 0;
+    __u32 loop_cnt;
+
+    for (loop_cnt = 0; loop_cnt < FILEPATH_NODE_MAX; loop_cnt++) {
+        dname = BPF_CORE_READ(dentry_ptr_for_path_walk, d_name.name);
+        dparent = BPF_CORE_READ(dentry_ptr_for_path_walk, d_parent);
+        pathnode_cache[loop_cnt] = dname;
+        if (BPF_CORE_READ(dentry_ptr_for_path_walk, d_inode, i_ino) == BPF_CORE_READ(dparent, d_inode, i_ino))
+            break;
+        dentry_ptr_for_path_walk = dparent;
+    }
+    num_nodes = 0; // Reset before use
+    if (loop_cnt < FILEPATH_NODE_MAX)
+        num_nodes = loop_cnt;
+
+    __builtin_memset(r->filepath, 0, sizeof(r->filepath));
+    offset = 0;
+
+    for (loop_cnt = num_nodes; loop_cnt > 0; loop_cnt--) {
+        if (pathnode_cache[loop_cnt] && offset < (sizeof(r->filepath) - DNAME_INLINE_LEN - 1) ) {
+            char component_buf[DNAME_INLINE_LEN];
+            __builtin_memset(component_buf, 0, DNAME_INLINE_LEN);
+            len_long = bpf_probe_read_kernel_str(component_buf, DNAME_INLINE_LEN, (void *)pathnode_cache[loop_cnt]);
+
+            if (len_long > 1) {
+                for (int k = 0; k < DNAME_INLINE_LEN - 1; ++k) {
+                    if (k >= (len_long - 1)) {
+                        break;
+                    }
+                    if ((offset + k) < sizeof(r->filepath)) {
+                        r->filepath[offset + k] = component_buf[k];
+                    } else {
+                        offset = sizeof(r->filepath);
+                        goto path_construction_done_local;
+                    }
+                }
+                offset += (len_long - 1);
+
+                if (loop_cnt > 1 && offset < (sizeof(r->filepath) -1) ) {
+                    if (r->filepath[offset-1] != '/') {
+                       r->filepath[offset] = '/';
+                       offset++;
+                    }
+                }
+            } else if (len_long == 1 && component_buf[0] == '/') {
+                 if (offset == 0 && offset < (sizeof(r->filepath) -1)) {
+                    r->filepath[offset] = '/';
+                    offset++;
+                 }
+            }
+        } else {
+            break;
+        }
+    }
+path_construction_done_local:;
+    if (offset < sizeof(r->filepath)) {
+        r->filepath[offset] = '\0';
+    } else {
+        r->filepath[sizeof(r->filepath)-1] = '\0';
+    }
+}
+
 
 /* handle all filesystem events for aggregation */
 static __attribute__((noinline)) int handle_fs_event(void *ctx, const struct FS_EVENT_INFO *event) {
-    struct dentry      *dentry_ptr_for_path_walk;
     struct dentry      *dentry_old;
     struct inode       *inode;
-    struct dentry      *dparent;
     struct RECORD_FS   *r;
     struct STATS       *s;
-    const __u8         *dname;
-    const __u8         *pathnode[FILEPATH_NODE_MAX] = {0};
+    const __u8         *pathnode[FILEPATH_NODE_MAX] = {0}; // Cache for path components
     char                filename_on_stack[FILENAME_LEN_MAX] = {0};
     char               *func;
     bool                agg_end;
     umode_t             imode;
     pid_t               pid;
     __u64               ts_event = bpf_ktime_get_ns();
-    __u32               num_nodes = 0;
-    __u32               offset = 0;
-    long                len_long = 0;
     __u64               key;
     __u32               zero = 0;
     __u32               idx;
     __u32               ino;
-    __u32               loop_cnt;
+    __u32               loop_cnt; // For general loops, not path construction
 
     if (event->index == I_ACCESS || event->index == I_ATTRIB) {
         return 0;
@@ -130,68 +193,11 @@ static __attribute__((noinline)) int handle_fs_event(void *ctx, const struct FS_
         bpf_probe_read_kernel_str(r->filename, sizeof(r->filename), filename_on_stack);
         r->isize_first = BPF_CORE_READ(inode, i_size);
 
-        dentry_ptr_for_path_walk = current_dentry;
-        for (loop_cnt = 0; loop_cnt < FILEPATH_NODE_MAX; loop_cnt++) {
-            dname = BPF_CORE_READ(dentry_ptr_for_path_walk, d_name.name);
-            dparent = BPF_CORE_READ(dentry_ptr_for_path_walk, d_parent);
-            pathnode[loop_cnt] = dname;
-            if (BPF_CORE_READ(dentry_ptr_for_path_walk, d_inode, i_ino) == BPF_CORE_READ(dparent, d_inode, i_ino))
-                break;
-            dentry_ptr_for_path_walk = dparent;
-        }
-        num_nodes = 0;
-        if (loop_cnt < FILEPATH_NODE_MAX)
-            num_nodes = loop_cnt;
-
-        __builtin_memset(r->filepath, 0, sizeof(r->filepath));
-        offset = 0;
-        for (loop_cnt = num_nodes; loop_cnt > 0; loop_cnt--) {
-            if (pathnode[loop_cnt] && offset < (sizeof(r->filepath) - DNAME_INLINE_LEN - 1) ) {
-                char component_buf[DNAME_INLINE_LEN];
-                __builtin_memset(component_buf, 0, DNAME_INLINE_LEN);
-                len_long = bpf_probe_read_kernel_str(component_buf, DNAME_INLINE_LEN, (void *)pathnode[loop_cnt]);
-
-                if (len_long > 1) {
-                    // No #pragma unroll
-                    for (int k = 0; k < DNAME_INLINE_LEN - 1; ++k) {
-                        if (k >= (len_long - 1)) {
-                            break;
-                        }
-                        if ((offset + k) < sizeof(r->filepath)) {
-                            r->filepath[offset + k] = component_buf[k];
-                        } else {
-                            offset = sizeof(r->filepath);
-                            goto path_construction_done;
-                        }
-                    }
-                    offset += (len_long - 1);
-
-                    if (loop_cnt > 1 && offset < (sizeof(r->filepath) -1) ) {
-                        if (r->filepath[offset-1] != '/') {
-                           r->filepath[offset] = '/';
-                           offset++;
-                        }
-                    }
-                } else if (len_long == 1 && component_buf[0] == '/') {
-                     if (offset == 0 && offset < (sizeof(r->filepath) -1)) {
-                        r->filepath[offset] = '/';
-                        offset++;
-                     }
-                }
-            } else {
-                break;
-            }
-        }
-path_construction_done:;
-        if (offset < sizeof(r->filepath)) {
-            r->filepath[offset] = '\0';
-        } else {
-            r->filepath[sizeof(r->filepath)-1] = '\0';
-        }
+        // Call helper to build filepath
+        build_event_filepath(r, current_dentry, pathnode);
 
         if (filter_path_prefix[0] != '\0') {
             bool match = true;
-            // No #pragma unroll
             for (int i = 0; i < FILEPATH_LEN_MAX; ++i) {
                 if (filter_path_prefix[i] == '\0') {
                     break;
@@ -388,7 +394,7 @@ int BPF_KPROBE(security_inode_unlink, struct inode *dir, struct dentry *dentry) 
 
 /* DEBUG */
 static __attribute__((noinline)) void debug_dump_stack(void *ctx, const char *func) {
-    static long debug_stack_arr[MAX_STACK_TRACE_DEPTH] = {0}; // Renamed and static
+    static long debug_stack_arr[MAX_STACK_TRACE_DEPTH] = {0};
     long                kstacklen;
     __u32               cnt_debug;
 
@@ -396,7 +402,7 @@ static __attribute__((noinline)) void debug_dump_stack(void *ctx, const char *fu
     if (kstacklen > 0) {
         bpf_printk("KERNEL STACK (%u): %s  ", (kstacklen / sizeof(long)), func);
         for (cnt_debug = 0; cnt_debug < MAX_STACK_TRACE_DEPTH; cnt_debug++) {
-            if (kstacklen > cnt_debug * sizeof(long)) // Check against kstacklen, not sizeof(debug_stack_arr)
+            if (kstacklen > cnt_debug * sizeof(long))
                 bpf_printk("  %pB", (void *)debug_stack_arr[cnt_debug]);
         }
     }
@@ -406,21 +412,15 @@ static __attribute__((noinline)) bool debug_file_is_tp(char *filename) {
     char tp[] = "trace_pipe";
     int  cnt_debug;
     if (filename) {
-        // Bounded loop for string comparison
-        for (cnt_debug = 0; cnt_debug < sizeof(tp) -1 && cnt_debug < DBG_LEN_MAX; cnt_debug++) {
+        for (cnt_debug = 0; cnt_debug < DBG_LEN_MAX -1 ; cnt_debug++) { // Check up to DBG_LEN_MAX-1 to allow for null terminator
+            if (tp[cnt_debug] == '\0') return filename[cnt_debug] == '\0'; // True if filename also ends
             if (filename[cnt_debug] == '\0' || filename[cnt_debug] != tp[cnt_debug])
-                return false; // Mismatch or end of filename
+                return false;
         }
-        // If loop completed and filename is at least as long as tp and matches
-        if (cnt_debug == (sizeof(tp) - 1) && (filename[cnt_debug] == '\0' || filename[cnt_debug] == tp[cnt_debug])) {
-             return true;
-        }
-         // Case where filename is exactly "trace_pipe" and loop finished due to cnt_debug < DBG_LEN_MAX
-        if (cnt_debug == (sizeof(tp) -1) && filename[cnt_debug-1] == tp[cnt_debug-1] && filename[cnt_debug] == '\0'){
-            return true;
-        }
-
-
+        // If loop completes, means first DBG_LEN_MAX-1 chars matched.
+        // If tp is shorter than DBG_LEN_MAX-1, this logic is covered by tp[cnt_debug]=='\0'.
+        // If tp is DBG_LEN_MAX-1 or longer, check current char.
+        return filename[cnt_debug] == tp[cnt_debug];
     }
     return false;
 }
@@ -428,20 +428,18 @@ static __attribute__((noinline)) bool debug_file_is_tp(char *filename) {
 static __attribute__((noinline)) bool debug_proc(char *comm, char *filename) {
     int cnt_debug;
     if (!comm) {
-        if (debug[0] == 'q' && !debug[1]) // Check if debug is just "q"
+        if (debug[0] == 'q' && debug[1] == '\0') // Check if debug is just "q"
             return true;
         else
             return false;
     }
-    if (debug[0] != '*') { // If not wildcard
+    if (debug[0] != '*') {
         for (cnt_debug = 0; cnt_debug < DBG_LEN_MAX; cnt_debug++) {
-            if (debug[cnt_debug] == '\0') return true; // Prefix match: debug string ended
-            if (comm[cnt_debug] == '\0' || comm[cnt_debug] != debug[cnt_debug]) // Comm string ended or mismatch
+            if (debug[cnt_debug] == '\0') return true;
+            if (comm[cnt_debug] == '\0' || comm[cnt_debug] != debug[cnt_debug])
                 return false;
         }
-        // If loop finishes, it means comm starts with debug and debug is DBG_LEN_MAX long
     }
-    // Check for trace_pipe, assuming filename is a valid pointer
     if (filename && debug_file_is_tp(filename))
         return false;
     return true;
