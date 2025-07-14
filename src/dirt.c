@@ -891,9 +891,8 @@ static int load_allowed_paths(struct dirt_bpf *skel, const char *filename) {
     FILE *fp;
     char line[FILEPATH_LEN_MAX];
     struct ALLOWED_PATH allowed_path;
-    uint32_t hash = 0;
+    uint32_t key = 0;
     int count = 0;
-    int i;
     
     fp = fopen(filename, "r");
     if (!fp) {
@@ -916,24 +915,19 @@ static int load_allowed_paths(struct dirt_bpf *skel, const char *filename) {
         allowed_path.path[sizeof(allowed_path.path) - 1] = '\0';
         allowed_path.enabled = 1;
         
-        // Calculate hash for the path
-        hash = 0;
-        for (i = 0; i < FILEPATH_LEN_MAX && allowed_path.path[i] != '\0'; i++) {
-            hash = hash * 31 + allowed_path.path[i];
-        }
-        
         if (config.verbose) {
-            fprintf(stderr, "Adding path: '%s' (hash: %u)\n", allowed_path.path, hash);
+            fprintf(stderr, "Adding path: '%s' (key: %u)\n", allowed_path.path, key);
         }
         
-        // Insert into BPF map
-        if (bpf_map__update_elem(skel->maps.allowed_paths, &hash, sizeof(hash), 
+        // Insert into BPF map using sequential keys
+        if (bpf_map__update_elem(skel->maps.allowed_paths, &key, sizeof(key), 
                                 &allowed_path, sizeof(allowed_path), BPF_ANY) != 0) {
             fprintf(stderr, "Failed to add path to BPF map: %s\n", line);
             fclose(fp);
             return -1;
         }
         
+        key++;
         count++;
     }
     

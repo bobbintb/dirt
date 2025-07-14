@@ -68,41 +68,43 @@ const volatile char         debug[DBG_LEN_MAX];
 /* helper function to check if file path is allowed */
 static __always_inline bool is_path_allowed(const char *filepath) {
     struct ALLOWED_PATH *allowed_path;
-    __u32 hash = 0;
-    int i;
+    __u32 key = 0;
+    __u32 max_key = MAP_ALLOWED_PATHS_MAX - 1;
+    bool map_has_entries = false;
     
-    // Simple hash of the filepath for lookup
-    for (i = 0; i < FILEPATH_LEN_MAX && filepath[i] != '\0'; i++) {
-        hash = hash * 31 + filepath[i];
-    }
-    
-    // Check if this path is in our allowed list
-    allowed_path = bpf_map_lookup_elem(&allowed_paths, &hash);
-    if (allowed_path && allowed_path->enabled) {
-        // Check for exact match or directory prefix match
-        for (i = 0; i < FILEPATH_LEN_MAX; i++) {
-            if (allowed_path->path[i] == '\0') {
-                // If allowed path ends here, check if filepath also ends or continues with '/'
-                if (filepath[i] == '\0' || filepath[i] == '/') {
-                    return true;
+    // Iterate through the allowed paths map
+    for (key = 0; key <= max_key; key++) {
+        allowed_path = bpf_map_lookup_elem(&allowed_paths, &key);
+        if (allowed_path && allowed_path->enabled) {
+            map_has_entries = true;
+            
+            // Check for exact match or directory prefix match
+            int i;
+            for (i = 0; i < FILEPATH_LEN_MAX; i++) {
+                if (allowed_path->path[i] == '\0') {
+                    // If allowed path ends here, check if filepath also ends or continues with '/'
+                    if (filepath[i] == '\0' || filepath[i] == '/') {
+                        return true;
+                    }
+                    break; // Try next allowed path
                 }
-                return false;
+                if (filepath[i] == '\0') {
+                    // If filepath ends but allowed path doesn't, no match
+                    break; // Try next allowed path
+                }
+                if (allowed_path->path[i] != filepath[i]) {
+                    break; // Try next allowed path
+                }
             }
-            if (filepath[i] == '\0') {
-                // If filepath ends but allowed path doesn't, no match
-                return false;
-            }
-            if (allowed_path->path[i] != filepath[i]) {
-                return false;
+            // If we get here, it means the paths matched completely
+            if (i == FILEPATH_LEN_MAX || (allowed_path->path[i] == '\0' && (filepath[i] == '\0' || filepath[i] == '/'))) {
+                return true;
             }
         }
-        return true;
     }
     
-    // If no match found, check if any paths are configured
-    // If the map is empty, allow all (backward compatibility)
-    __u32 test_key = 0;
-    if (bpf_map_lookup_elem(&allowed_paths, &test_key) == NULL) {
+    // If no paths are configured in the map, allow all (backward compatibility)
+    if (!map_has_entries) {
         return true;
     }
     
@@ -203,7 +205,7 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
                 if (len && offset < (sizeof(r->filepath)) - len) {
                     offset += (len - 1);
                     if (cnt != num_nodes && offset < (sizeof(r->filepath))) {
-                        r->filepath[offset] = '/';
+test                        r->filepath[offset] = '/';
                         offset++;
                     }
                 }

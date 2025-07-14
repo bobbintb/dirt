@@ -1,104 +1,56 @@
 #!/bin/bash
 
-# Test script for dirt path filtering
-# This script helps verify that the path filtering feature is working correctly
-
-echo "=== Dirt Path Filtering Test ==="
+echo "=== Testing Path Filtering ==="
 echo
 
-# Create test files
-echo "Creating test files..."
-mkdir -p /tmp/dirt_test
-echo "test content" > /tmp/dirt_test/file1.txt
-echo "test content" > /tmp/dirt_test/file2.txt
-echo "test content" > /tmp/test_file.txt
-echo "test content" > /etc/test_file.txt
-
-# Create allowed paths file
-echo "Creating allowed paths file..."
-cat > /tmp/allowed_paths.txt << EOF
-# Test allowed paths
-/tmp/dirt_test
-/etc/test_file.txt
+# Create test paths file
+echo "Creating test paths file..."
+cat > /tmp/test_paths.txt << EOF
+/mnt/
+/tmp/test
 EOF
 
-echo "Allowed paths file contents:"
-cat /tmp/allowed_paths.txt
-echo
-
-# Test 1: Run dirt with path filtering
-echo "=== Test 1: Running dirt with path filtering ==="
-echo "This should only show events for /tmp/dirt_test and /etc/test_file.txt"
-echo "Press Ctrl+C to stop after a few seconds..."
+echo "Paths file contents:"
+cat /tmp/test_paths.txt
 echo
 
 # Start dirt in background
-sudo ./src/dirt -p /tmp/allowed_paths.txt -V &
+echo "Starting dirt with path filtering..."
+sudo ./src/dirt -p /tmp/test_paths.txt -V &
 DIRT_PID=$!
 
-# Wait a moment for dirt to start
-sleep 2
-
-# Generate some file events
-echo "Generating file events..."
-touch /tmp/dirt_test/file3.txt
-rm /tmp/dirt_test/file1.txt
-echo "new content" >> /tmp/dirt_test/file2.txt
-
-touch /tmp/test_file.txt
-rm /tmp/test_file.txt
-
-touch /etc/test_file.txt
-echo "new content" >> /etc/test_file.txt
-
-# Wait a bit more
+# Wait for it to start
 sleep 3
 
-# Stop dirt
+echo "Creating test files..."
+echo "1. Creating file in /mnt/ (should be allowed):"
+touch /mnt/testfile1
+
+echo "2. Creating file in /tmp/test (should be allowed):"
+mkdir -p /tmp/test
+touch /tmp/test/testfile2
+
+echo "3. Creating file in /tmp/other (should be blocked):"
+touch /tmp/other/testfile3
+
+echo "4. Creating file in /home (should be blocked):"
+touch /home/testfile4
+
+# Wait a moment for events to be processed
+sleep 2
+
 echo "Stopping dirt..."
 sudo kill $DIRT_PID
 wait $DIRT_PID 2>/dev/null
 
-echo
-echo "=== Test 2: Running dirt without path filtering ==="
-echo "This should show ALL file events"
-echo "Press Ctrl+C to stop after a few seconds..."
-echo
-
-# Start dirt without filtering
-sudo ./src/dirt -V &
-DIRT_PID=$!
-
-# Wait a moment for dirt to start
-sleep 2
-
-# Generate some file events
-echo "Generating file events..."
-touch /tmp/dirt_test/file4.txt
-rm /tmp/dirt_test/file2.txt
-echo "new content" >> /tmp/dirt_test/file3.txt
-
-touch /tmp/test_file.txt
-rm /tmp/test_file.txt
-
-# Wait a bit more
-sleep 3
-
-# Stop dirt
-echo "Stopping dirt..."
-sudo kill $DIRT_PID
-wait $DIRT_PID 2>/dev/null
+echo "Test completed. Check the output above for events."
+echo "Files in /mnt/ and /tmp/test should show up, others should be filtered out."
 
 # Cleanup
-echo
-echo "Cleaning up test files..."
-rm -rf /tmp/dirt_test
-rm -f /tmp/test_file.txt
-rm -f /etc/test_file.txt
-rm -f /tmp/allowed_paths.txt
-
-echo
-echo "=== Test Complete ==="
-echo "Compare the output from both tests."
-echo "Test 1 should show fewer events (only from allowed paths)."
-echo "Test 2 should show all events." 
+rm -f /tmp/test_paths.txt
+rm -f /mnt/testfile1
+rm -f /tmp/test/testfile2
+rm -f /tmp/other/testfile3
+rm -f /home/testfile4
+rmdir /tmp/test 2>/dev/null
+rmdir /tmp/other 2>/dev/null 
