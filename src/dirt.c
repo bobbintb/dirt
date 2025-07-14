@@ -14,6 +14,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <time.h>
 #include <dirent.h>
@@ -66,7 +67,7 @@ static char header_str[] = "\e[1;33mdirt -- (c) 2024 Tarsal, Inc\e[0m\n"
 static char usage_str[] =
     "Usage:\n"
     "  dirt [-e EVENTS] [-o json|json-min] [-x SOCKET_PATH] [-q] [-d] [-V] [-T TOKEN]\n"
-    "         [-l] [--legend], [-h] [--help], [--version]\n"
+    "         [-p PATH_FILE] [-l] [--legend], [-h] [--help], [--version]\n"
     "  -e EVENTS                Max number of filesystem events per aggregated record until export\n"
     "                             (default: disabled, '1': no aggregation)\n"
     "  -o json                  Json output with formatting (default)\n"
@@ -80,6 +81,8 @@ static char usage_str[] =
     "                             Print eBPF load and co-re messages on start of eBPF program\n"
     "                             to stderr console\n"
     "  -T TOKEN                 Token specified on host to be included in json output\n"
+    "  -p PATH_FILE             File containing allowed file paths (one per line)\n"
+    "                             If not specified, all files are monitored\n"
     "  -l, --legend             Show legend\n"
     "  -h, --help               Show help\n"
     "      --version            Show version\n"
@@ -91,6 +94,7 @@ static char usage_str[] =
     "Examples:\n"
     "  sudo ./dirt                                                           # terminal mode\n"
     "  sudo ./dirt -x /tmp/dirt.sock -d                                    # daemon mode\n"
+    "  sudo ./dirt -p /etc/dirt/allowed_paths.txt                          # with path filtering\n"
     "  sudo ./dirt -V -D '*'                                                 # debug mode\n"
     "  sudo ./dirt --legend                                                  # show legend\n"
     "  sudo ./dirt --version                                                 # show version\n\n";
@@ -138,6 +142,8 @@ static struct CONFIG {
     bool  verbose;
     char  token[TOKEN_LEN_MAX];
     char  debug[DBG_LEN_MAX];
+    char  allowed_paths_file[FILEPATH_LEN_MAX]; // File containing allowed paths
+    bool  path_filtering_enabled; // Whether path filtering is enabled
 } config = {0};
 
 
@@ -171,6 +177,7 @@ static struct JSON_SUB_KEY jsubkeys[] = {
 static int unix_socket_send_msg(char *msg, const char *socket_path);
 static char *mkjson(enum MKJSON_CONTAINER_TYPE, int, ...);
 static char *mkjson_prettify(const char *, char *);
+static int load_allowed_paths(struct dirt_bpf *skel, const char *filename);
 
 
 /* handle signal */
@@ -380,7 +387,7 @@ int main(int argc, char **argv) {
     uname(&local_utsn);
 
 
-    while ((opt = getopt_long(argc, argv, ":e:o:x:qdT:lhVD:", longopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, ":e:o:x:qdT:lhVD:p:", longopts, NULL)) != -1) {
         switch (opt) {
         case 'e':
             config.agg_events_max = atoi(optarg);
@@ -438,6 +445,14 @@ int main(int argc, char **argv) {
             if (strlen(optarg) > sizeof(config.debug) - 1)
                 usage("Invalid debug filter with too many characters specified");
             strncpy(config.debug, optarg, sizeof(config.debug) - 1);
+            argn += 2;
+            break;
+        case 'p':
+            if (strlen(optarg) > sizeof(config.allowed_paths_file) - 1)
+                usage("Invalid allowed paths file with too many characters specified");
+            strncpy(config.allowed_paths_file, optarg, sizeof(config.allowed_paths_file) - 1);
+            config.allowed_paths_file[sizeof(config.allowed_paths_file) - 1] = '\0';
+            config.path_filtering_enabled = true;
             argn += 2;
             break;
         case 0:
@@ -511,6 +526,18 @@ int main(int argc, char **argv) {
         err = -1;
         fprintf(stderr, "Failed to create ring buffer\n");
         goto cleanup;
+    }
+
+    // Load allowed paths if specified
+    if (config.path_filtering_enabled) {
+        err = load_allowed_paths(skel, config.allowed_paths_file);
+        if (err) {
+            fprintf(stderr, "Failed to load allowed paths from %s\n", config.allowed_paths_file);
+            goto cleanup;
+        }
+        if (config.verbose) {
+            fprintf(stderr, "\e[0;32m[+]\e[0m Path filtering enabled with file: %s\n", config.allowed_paths_file);
+        }
     }
 
     fprintf(stderr, "%s", title_str);
@@ -857,4 +884,60 @@ static char *mkjson(enum MKJSON_CONTAINER_TYPE otype, int count, ...) {
     for (i = 0; i < count; i++) free(chunks[i]);
     free(chunks);
     return json_str;
+}
+
+/* load allowed paths from file and populate BPF map */
+static int load_allowed_paths(struct dirt_bpf *skel, const char *filename) {
+    FILE *fp;
+    char line[FILEPATH_LEN_MAX];
+    struct ALLOWED_PATH allowed_path;
+    __u32 hash = 0;
+    int count = 0;
+    int i;
+    
+    fp = fopen(filename, "r");
+    if (!fp) {
+        fprintf(stderr, "Failed to open allowed paths file: %s\n", filename);
+        return -1;
+    }
+    
+    while (fgets(line, sizeof(line), fp) && count < MAP_ALLOWED_PATHS_MAX) {
+        // Remove newline
+        line[strcspn(line, "\n")] = 0;
+        
+        // Skip empty lines and comments
+        if (strlen(line) == 0 || line[0] == '#') {
+            continue;
+        }
+        
+        // Initialize the allowed path structure
+        memset(&allowed_path, 0, sizeof(allowed_path));
+        strncpy(allowed_path.path, line, sizeof(allowed_path.path) - 1);
+        allowed_path.path[sizeof(allowed_path.path) - 1] = '\0';
+        allowed_path.enabled = 1;
+        
+        // Calculate hash for the path
+        hash = 0;
+        for (i = 0; i < FILEPATH_LEN_MAX && allowed_path.path[i] != '\0'; i++) {
+            hash = hash * 31 + allowed_path.path[i];
+        }
+        
+        // Insert into BPF map
+        if (bpf_map__update_elem(skel->maps.allowed_paths, &hash, sizeof(hash), 
+                                &allowed_path, sizeof(allowed_path), BPF_ANY) != 0) {
+            fprintf(stderr, "Failed to add path to BPF map: %s\n", line);
+            fclose(fp);
+            return -1;
+        }
+        
+        count++;
+    }
+    
+    fclose(fp);
+    
+    if (config.verbose) {
+        fprintf(stderr, "Loaded %d allowed paths from %s\n", count, filename);
+    }
+    
+    return 0;
 }

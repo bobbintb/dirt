@@ -44,6 +44,14 @@ struct {
     __type(value, struct STATS);
 } stats SEC(".maps");
 
+/* map for storing allowed file paths */
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAP_ALLOWED_PATHS_MAX);
+    __type(key, __u32);
+    __type(value, struct ALLOWED_PATH);
+} allowed_paths SEC(".maps");
+
 /* glabal variables shared with userspace */
 const volatile __u64 ts_start;
 const volatile __u32 agg_events_max;
@@ -56,6 +64,41 @@ static __always_inline void debug_dump_stack(void *, const char *);
 static __always_inline bool debug_proc(char *, char *);
 static __always_inline bool debug_file_is_tp(char *);
 const volatile char         debug[DBG_LEN_MAX];
+
+/* helper function to check if file path is allowed */
+static __always_inline bool is_path_allowed(const char *filepath) {
+    struct ALLOWED_PATH *allowed_path;
+    __u32 key;
+    __u32 hash = 0;
+    int i;
+    
+    // If no allowed paths are configured, allow all
+    if (bpf_map_lookup_elem(&allowed_paths, &hash) == NULL) {
+        return true;
+    }
+    
+    // Simple hash of the filepath for lookup
+    for (i = 0; i < FILEPATH_LEN_MAX && filepath[i] != '\0'; i++) {
+        hash = hash * 31 + filepath[i];
+    }
+    
+    // Check if this path is in our allowed list
+    allowed_path = bpf_map_lookup_elem(&allowed_paths, &hash);
+    if (allowed_path && allowed_path->enabled) {
+        // Verify exact path match
+        for (i = 0; i < FILEPATH_LEN_MAX; i++) {
+            if (allowed_path->path[i] != filepath[i]) {
+                return false;
+            }
+            if (allowed_path->path[i] == '\0') {
+                return filepath[i] == '\0';
+            }
+        }
+        return true;
+    }
+    
+    return false;
+}
 
 /* handle all filesystem events for aggregation */
 static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO *event) {
@@ -163,8 +206,18 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
             r->event[cnt] = 0;
         r->inlink = 0;
 
+        // Check if this file path is allowed
+        if (!is_path_allowed(r->filepath)) {
+            return 0;
+        }
+
         if (s)
             s->fs_records++;
+    } else {
+        // For existing records, check if path is still allowed
+        if (!is_path_allowed(r->filepath)) {
+            return 0;
+        }
     }
     if (s)
         s->fs_events++;

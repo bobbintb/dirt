@@ -1,0 +1,20 @@
+# Allowed paths for dirt eBPF monitoring
+# One path per line, comments start with #
+# Empty lines are ignored
+
+# Monitor specific files
+/etc/passwd
+/etc/shadow
+/etc/hosts
+
+# Monitor specific directories
+/home/user/documents
+/var/log
+
+# Monitor files with specific extensions
+*.conf
+*.log
+
+# Monitor system configuration files
+/etc/ssh/sshd_config
+/etc/nginx/nginx.conf 

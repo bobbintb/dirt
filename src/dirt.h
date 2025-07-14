@@ -192,6 +192,7 @@ struct FS_EVENT fsevt[] = {{I_CREATE, FS_CREATE, "CREATE", "CRE", "CR"},
 #define CACHE_ENTRIES_MAX         65536
 #define MAP_RECORDS_MAX           65536
 #define MAP_PIDS_MAX              8192
+#define MAP_ALLOWED_PATHS_MAX     1024  // Maximum number of allowed paths
 #define RECORD_TYPE_FILE          1
 #define TASK_COMM_LEN             32
 #define TASK_COMM_SHORT_LEN       16
@@ -419,5 +420,11 @@ static inline uint64_t crc64(uint64_t crc, const unsigned char *s, uint64_t l) {
     }
     return crc;
 }
+
+/* define allowed path structure for filtering */
+struct ALLOWED_PATH {
+    char path[FILEPATH_LEN_MAX];
+    __u32 enabled;
+};
 
 #endif /* __DIRT_H */
