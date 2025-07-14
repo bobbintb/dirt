@@ -70,20 +70,6 @@ static __always_inline bool is_path_allowed(const char *filepath) {
     struct ALLOWED_PATH *allowed_path;
     __u32 hash = 0;
     int i;
-    bool found_any = false;
-    
-    // Check if any paths are configured by trying a few different keys
-    for (i = 0; i < 10; i++) {
-        if (bpf_map_lookup_elem(&allowed_paths, &i) != NULL) {
-            found_any = true;
-            break;
-        }
-    }
-    
-    // If no allowed paths are configured, deny all (safer default)
-    if (!found_any) {
-        return false;
-    }
     
     // Simple hash of the filepath for lookup
     for (i = 0; i < FILEPATH_LEN_MAX && filepath[i] != '\0'; i++) {
@@ -110,6 +96,13 @@ static __always_inline bool is_path_allowed(const char *filepath) {
                 return false;
             }
         }
+        return true;
+    }
+    
+    // If no match found, check if any paths are configured
+    // If the map is empty, allow all (backward compatibility)
+    __u32 test_key = 0;
+    if (bpf_map_lookup_elem(&allowed_paths, &test_key) == NULL) {
         return true;
     }
     
@@ -228,6 +221,12 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
     
     // Check if this file path is allowed (for both new and existing records)
     if (!is_path_allowed(r->filepath)) {
+        // Debug: print rejected paths (only for first few to avoid spam)
+        static __u32 debug_count = 0;
+        if (debug_count < 5) {
+            bpf_printk("PATH REJECTED: %s", r->filepath);
+            debug_count++;
+        }
         return 0;
     }
     

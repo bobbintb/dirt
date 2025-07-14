@@ -922,6 +922,10 @@ static int load_allowed_paths(struct dirt_bpf *skel, const char *filename) {
             hash = hash * 31 + allowed_path.path[i];
         }
         
+        if (config.verbose) {
+            fprintf(stderr, "Adding path: '%s' (hash: %u)\n", allowed_path.path, hash);
+        }
+        
         // Insert into BPF map
         if (bpf_map__update_elem(skel->maps.allowed_paths, &hash, sizeof(hash), 
                                 &allowed_path, sizeof(allowed_path), BPF_ANY) != 0) {
@@ -937,6 +941,7 @@ static int load_allowed_paths(struct dirt_bpf *skel, const char *filename) {
     
     if (config.verbose) {
         fprintf(stderr, "Loaded %d allowed paths from %s\n", count, filename);
+        fprintf(stderr, "Path filtering is %s\n", count > 0 ? "ENABLED" : "DISABLED (no paths loaded)");
     }
     
     return 0;
