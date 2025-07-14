@@ -891,7 +891,7 @@ static int load_allowed_paths(struct dirt_bpf *skel, const char *filename) {
     FILE *fp;
     char line[FILEPATH_LEN_MAX];
     struct ALLOWED_PATH allowed_path;
-    __u32 hash = 0;
+    uint32_t hash = 0;
     int count = 0;
     int i;
     

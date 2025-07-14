@@ -424,7 +424,7 @@ static inline uint64_t crc64(uint64_t crc, const unsigned char *s, uint64_t l) {
 /* define allowed path structure for filtering */
 struct ALLOWED_PATH {
     char path[FILEPATH_LEN_MAX];
-    __u32 enabled;
+    uint32_t enabled;
 };
 
 #endif /* __DIRT_H */

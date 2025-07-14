@@ -68,13 +68,21 @@ const volatile char         debug[DBG_LEN_MAX];
 /* helper function to check if file path is allowed */
 static __always_inline bool is_path_allowed(const char *filepath) {
     struct ALLOWED_PATH *allowed_path;
-    __u32 key;
     __u32 hash = 0;
     int i;
+    bool found_any = false;
     
-    // If no allowed paths are configured, allow all
-    if (bpf_map_lookup_elem(&allowed_paths, &hash) == NULL) {
-        return true;
+    // Check if any paths are configured by trying a few different keys
+    for (i = 0; i < 10; i++) {
+        if (bpf_map_lookup_elem(&allowed_paths, &i) != NULL) {
+            found_any = true;
+            break;
+        }
+    }
+    
+    // If no allowed paths are configured, deny all (safer default)
+    if (!found_any) {
+        return false;
     }
     
     // Simple hash of the filepath for lookup
@@ -85,13 +93,21 @@ static __always_inline bool is_path_allowed(const char *filepath) {
     // Check if this path is in our allowed list
     allowed_path = bpf_map_lookup_elem(&allowed_paths, &hash);
     if (allowed_path && allowed_path->enabled) {
-        // Verify exact path match
+        // Check for exact match or directory prefix match
         for (i = 0; i < FILEPATH_LEN_MAX; i++) {
-            if (allowed_path->path[i] != filepath[i]) {
+            if (allowed_path->path[i] == '\0') {
+                // If allowed path ends here, check if filepath also ends or continues with '/'
+                if (filepath[i] == '\0' || filepath[i] == '/') {
+                    return true;
+                }
                 return false;
             }
-            if (allowed_path->path[i] == '\0') {
-                return filepath[i] == '\0';
+            if (filepath[i] == '\0') {
+                // If filepath ends but allowed path doesn't, no match
+                return false;
+            }
+            if (allowed_path->path[i] != filepath[i]) {
+                return false;
             }
         }
         return true;
@@ -206,19 +222,15 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
             r->event[cnt] = 0;
         r->inlink = 0;
 
-        // Check if this file path is allowed
-        if (!is_path_allowed(r->filepath)) {
-            return 0;
-        }
-
         if (s)
             s->fs_records++;
-    } else {
-        // For existing records, check if path is still allowed
-        if (!is_path_allowed(r->filepath)) {
-            return 0;
-        }
     }
+    
+    // Check if this file path is allowed (for both new and existing records)
+    if (!is_path_allowed(r->filepath)) {
+        return 0;
+    }
+    
     if (s)
         s->fs_events++;
 
