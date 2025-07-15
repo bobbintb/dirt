@@ -45,12 +45,6 @@ struct {
 } stats SEC(".maps");
 
 /* map for storing allowed file paths */
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, MAP_ALLOWED_PATHS_MAX);
-    __type(key, __u32);
-    __type(value, struct ALLOWED_PATH);
-} allowed_paths SEC(".maps");
 
 /* glabal variables shared with userspace */
 const volatile __u64 ts_start;
@@ -65,13 +59,7 @@ static __always_inline bool debug_proc(char *, char *);
 static __always_inline bool debug_file_is_tp(char *);
 const volatile char         debug[DBG_LEN_MAX];
 
-#define PREFIX_MAX_LEN 16
 #define PREFIXES_MAX 8
-
-struct allowed_prefix {
-    char prefix[PREFIX_MAX_LEN];
-    bool enabled;
-};
 
 struct {
     __uint(type, BPF_MAP_TYPE_ARRAY);

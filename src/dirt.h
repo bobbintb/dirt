@@ -10,6 +10,8 @@
 #ifndef __DIRT_H
 #define __DIRT_H
 
+#include <stdbool.h>
+
 /* define minimal kernel requirement */
 #define KERNEL_VERSION_MIN 5
 #define KERNEL_MAJOR_MIN   10
@@ -421,10 +423,12 @@ static inline uint64_t crc64(uint64_t crc, const unsigned char *s, uint64_t l) {
     return crc;
 }
 
+#define PREFIX_MAX_LEN 16
+
 /* define allowed path structure for filtering */
-struct ALLOWED_PATH {
-    char path[FILEPATH_LEN_MAX];
-    uint32_t enabled;
+struct allowed_prefix {
+    char prefix[PREFIX_MAX_LEN];
+    bool enabled;
 };
 
 #endif /* __DIRT_H */

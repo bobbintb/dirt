@@ -867,7 +867,7 @@ static char *mkjson(enum MKJSON_CONTAINER_TYPE otype, int count, ...) {
 static int load_allowed_paths(struct dirt_bpf *skel, const char *filename) {
     FILE *fp;
     char line[FILEPATH_LEN_MAX];
-    struct ALLOWED_PATH allowed_path;
+    struct allowed_prefix allowed_path;
     uint32_t key = 0;
     int count = 0;
     
@@ -888,16 +888,16 @@ static int load_allowed_paths(struct dirt_bpf *skel, const char *filename) {
         
         // Initialize the allowed path structure
         memset(&allowed_path, 0, sizeof(allowed_path));
-        strncpy(allowed_path.path, line, sizeof(allowed_path.path) - 1);
-        allowed_path.path[sizeof(allowed_path.path) - 1] = '\0';
-        allowed_path.enabled = 1;
+        strncpy(allowed_path.prefix, line, sizeof(allowed_path.prefix) - 1);
+        allowed_path.prefix[sizeof(allowed_path.prefix) - 1] = '\0';
+        allowed_path.enabled = true;
         
         if (config.verbose) {
-            fprintf(stderr, "Adding path: '%s' (key: %u)\n", allowed_path.path, key);
+            fprintf(stderr, "Adding path: '%s' (key: %u)\n", allowed_path.prefix, key);
         }
         
         // Insert into BPF map using sequential keys
-        if (bpf_map__update_elem(skel->maps.allowed_paths, &key, sizeof(key), 
+        if (bpf_map__update_elem(skel->maps.allowed_prefixes, &key, sizeof(key),
                                 &allowed_path, sizeof(allowed_path), BPF_ANY) != 0) {
             fprintf(stderr, "Failed to add path to BPF map: %s\n", line);
             fclose(fp);
