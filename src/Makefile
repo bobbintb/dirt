@@ -17,13 +17,13 @@ BPFTOOL := $(abspath ../vmlinux/$(ARCH)/bpftool)
 ifeq ($(CROSS_COMPILE),aarch64-linux-gnu-)
     ARCH := arm64
 endif
-VMLINUX := ../vmlinux/$(ARCH)/vmlinux.h
+VMLINUX_H := ../vmlinux/$(ARCH)/vmlinux.h
 GIT_VERSION := $(shell git describe --abbrev=4 --dirty --always --tags | cut -d '-' -f 1,2,4 | sed 's/-/./1')
 GLIBC_VERSION := ${shell ldd --version | head -n 1 | cut -d ')' -f2}
 CLANG_VERSION := ${shell clang --version | head -n 1 | sed 's/[^0-9.]*\([0-9.]*\).*/\1/'}
 LIBBPF_VERSION := ${shell pkg-config --modversion libbpf}
 DATETIME := $(shell date +'%b-%d-%Y_%H:%M:%S%z')
-INCLUDES := -I$(OUTPUT) -I$(dir $(VMLINUX))
+INCLUDES := -I$(OUTPUT) -I$(dir $(VMLINUX_H))
 CFLAGS := -Wextra -g -std=gnu99 -Wall -DDATETIME=\"$(DATETIME)\" -DVERSION=\"$(GIT_VERSION)\" -DKERNEL=\"$(KERNEL)\"\
           -D ARCH=\"$(ARCH)\" -DCLANG_VERSION=\"$(CLANG_VERSION)\" -DLIBBPF_VERSION=\"$(LIBBPF_VERSION)\"
 CLANG_CHECKS := --checks=-*,clang-analyzer-*,-clang-analyzer-cplusplus* --warnings-as-errors=*
@@ -141,7 +141,7 @@ $(OUTPUT):
 	$(Q)mkdir -p $@
 
 # Build BPF code
-$(OUTPUT)/%.bpf.o: %.bpf.c *.h $(VMLINUX) | $(OUTPUT)
+$(OUTPUT)/%.bpf.o: %.bpf.c *.h $(VMLINUX_H) | $(OUTPUT)
 	$(call msg,BPF,$@)
 	$(Q)$(CLANG) -g -O2 -target bpf -D__TARGET_ARCH_$(ARCH) $(INCLUDES) $(CLANG_BPF_SYS_INCLUDES) -c $(filter %.c,$^) -o $@
 	$(Q)$(LLVM_STRIP) -g $@

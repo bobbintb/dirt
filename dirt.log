@@ -1,0 +1,5 @@
+libbpf: failed to find valid kernel BTF
+libbpf: Error loading vmlinux BTF: -3
+libbpf: failed to load object 'dirt_bpf'
+libbpf: failed to load BPF skeleton 'dirt_bpf': -3
+Failed to load and verify BPF skeleton
