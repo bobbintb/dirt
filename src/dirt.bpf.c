@@ -65,54 +65,47 @@ static __always_inline bool debug_proc(char *, char *);
 static __always_inline bool debug_file_is_tp(char *);
 const volatile char         debug[DBG_LEN_MAX];
 
-/* helper function to check if file path is allowed */
+#define PREFIX_MAX_LEN 16
+#define PREFIXES_MAX 8
+
+struct allowed_prefix {
+    char prefix[PREFIX_MAX_LEN];
+    bool enabled;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, PREFIXES_MAX);
+    __type(key, __u32);
+    __type(value, struct allowed_prefix);
+} allowed_prefixes SEC(".maps");
+
 static __always_inline bool is_path_allowed(const char *filepath) {
-    struct ALLOWED_PATH *allowed_path;
-    __u32 key = 0;
-    bool map_has_entries = false;
-    
-    // Check a limited number of keys to avoid infinite loop detection
-    // We'll check the first 10 keys, which should be sufficient for most use cases
     #pragma unroll
-    for (int i = 0; i < 10; i++) {
-        key = i;
-        allowed_path = bpf_map_lookup_elem(&allowed_paths, &key);
-        if (allowed_path && allowed_path->enabled) {
-            map_has_entries = true;
-            
-            // Check for exact match or directory prefix match
-            int j;
-            #pragma unroll
-            for (j = 0; j < 100; j++) { // Limit to 100 chars to avoid unroll issues
-                if (allowed_path->path[j] == '\0') {
-                    // If allowed path ends here, check if filepath also ends or continues with '/'
-                    if (filepath[j] == '\0' || filepath[j] == '/') {
-                        return true;
-                    }
-                    break; // Try next allowed path
-                }
-                if (filepath[j] == '\0') {
-                    // If filepath ends but allowed path doesn't, no match
-                    break; // Try next allowed path
-                }
-                if (allowed_path->path[j] != filepath[j]) {
-                    break; // Try next allowed path
-                }
-            }
-            // If we get here, it means the paths matched completely
-            if (j == 100 || (allowed_path->path[j] == '\0' && (filepath[j] == '\0' || filepath[j] == '/'))) {
-                return true;
+    for (int i = 0; i < PREFIXES_MAX; i++) {
+        __u32 key = i;
+        struct allowed_prefix *p = bpf_map_lookup_elem(&allowed_prefixes, &key);
+        if (!p || !p->enabled)
+            continue;
+
+        bool matched = true;
+        #pragma unroll
+        for (int j = 0; j < PREFIX_MAX_LEN; j++) {
+            char c = p->prefix[j];
+            if (c == '\0')
+                break;
+            char fc = filepath[j];
+            if (fc != c) {
+                matched = false;
+                break;
             }
         }
+        if (matched)
+            return true;
     }
-    
-    // If no paths are configured in the map, allow all (backward compatibility)
-    if (!map_has_entries) {
-        return true;
-    }
-    
     return false;
 }
+
 
 /* handle all filesystem events for aggregation */
 static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO *event) {
