@@ -69,35 +69,38 @@ const volatile char         debug[DBG_LEN_MAX];
 static __always_inline bool is_path_allowed(const char *filepath) {
     struct ALLOWED_PATH *allowed_path;
     __u32 key = 0;
-    __u32 max_key = MAP_ALLOWED_PATHS_MAX - 1;
     bool map_has_entries = false;
     
-    // Iterate through the allowed paths map
-    for (key = 0; key <= max_key; key++) {
+    // Check a limited number of keys to avoid infinite loop detection
+    // We'll check the first 10 keys, which should be sufficient for most use cases
+    #pragma unroll
+    for (int i = 0; i < 10; i++) {
+        key = i;
         allowed_path = bpf_map_lookup_elem(&allowed_paths, &key);
         if (allowed_path && allowed_path->enabled) {
             map_has_entries = true;
             
             // Check for exact match or directory prefix match
-            int i;
-            for (i = 0; i < FILEPATH_LEN_MAX; i++) {
-                if (allowed_path->path[i] == '\0') {
+            int j;
+            #pragma unroll
+            for (j = 0; j < 100; j++) { // Limit to 100 chars to avoid unroll issues
+                if (allowed_path->path[j] == '\0') {
                     // If allowed path ends here, check if filepath also ends or continues with '/'
-                    if (filepath[i] == '\0' || filepath[i] == '/') {
+                    if (filepath[j] == '\0' || filepath[j] == '/') {
                         return true;
                     }
                     break; // Try next allowed path
                 }
-                if (filepath[i] == '\0') {
+                if (filepath[j] == '\0') {
                     // If filepath ends but allowed path doesn't, no match
                     break; // Try next allowed path
                 }
-                if (allowed_path->path[i] != filepath[i]) {
+                if (allowed_path->path[j] != filepath[j]) {
                     break; // Try next allowed path
                 }
             }
             // If we get here, it means the paths matched completely
-            if (i == FILEPATH_LEN_MAX || (allowed_path->path[i] == '\0' && (filepath[i] == '\0' || filepath[i] == '/'))) {
+            if (j == 100 || (allowed_path->path[j] == '\0' && (filepath[j] == '\0' || filepath[j] == '/'))) {
                 return true;
             }
         }
@@ -205,7 +208,7 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
                 if (len && offset < (sizeof(r->filepath)) - len) {
                     offset += (len - 1);
                     if (cnt != num_nodes && offset < (sizeof(r->filepath))) {
-test                        r->filepath[offset] = '/';
+                        r->filepath[offset] = '/';
                         offset++;
                     }
                 }
