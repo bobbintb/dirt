@@ -33,7 +33,7 @@
 #include <sys/un.h> // For sockaddr_un
 
 /* help and usage strings */
-static char title_str[] = "\e[38;2;60;30;10m·▄▄▄▄  ▪  ▄▄▄  ▄▄▄▄▄\n"
+static char title_str[] = "\e[38;2;60;30;10m· ▄▄▄▄  ▪  ▄▄▄  ▄▄▄▄▄\n"
                                             "██▪ ██ ██ ▀▄ █·•██ \n"
                                             "▐█· ▐█▌▐█·▐▀▀▄  ▐█.\n"
                                             "██. ██ ▐█▌▐█•█▌ ▐█▌·\n"
