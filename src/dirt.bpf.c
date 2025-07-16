@@ -44,6 +44,8 @@ struct {
     __type(value, struct STATS);
 } stats SEC(".maps");
 
+/* map for storing allowed file paths */
+
 /* glabal variables shared with userspace */
 const volatile __u64 ts_start;
 const volatile __u32 agg_events_max;
@@ -56,6 +58,42 @@ static __always_inline void debug_dump_stack(void *, const char *);
 static __always_inline bool debug_proc(char *, char *);
 static __always_inline bool debug_file_is_tp(char *);
 const volatile char         debug[DBG_LEN_MAX];
+
+#define PREFIXES_MAX 8
+
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, PREFIXES_MAX);
+    __type(key, __u32);
+    __type(value, struct allowed_prefix);
+} allowed_prefixes SEC(".maps");
+
+static __always_inline bool is_path_allowed(const char *filepath) {
+    #pragma unroll
+    for (int i = 0; i < PREFIXES_MAX; i++) {
+        __u32 key = i;
+        struct allowed_prefix *p = bpf_map_lookup_elem(&allowed_prefixes, &key);
+        if (!p || !p->enabled)
+            continue;
+
+        bool matched = true;
+        #pragma unroll
+        for (int j = 0; j < PREFIX_MAX_LEN; j++) {
+            char c = p->prefix[j];
+            if (c == '\0')
+                break;
+            char fc = filepath[j];
+            if (fc != c) {
+                matched = false;
+                break;
+            }
+        }
+        if (matched)
+            return true;
+    }
+    return false;
+}
+
 
 /* handle all filesystem events for aggregation */
 static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO *event) {
@@ -166,6 +204,18 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
         if (s)
             s->fs_records++;
     }
+    
+    // Check if this file path is allowed (for both new and existing records)
+    if (!is_path_allowed(r->filepath)) {
+        // Debug: print rejected paths (only for first few to avoid spam)
+        static __u32 debug_count = 0;
+        if (debug_count < 5) {
+            bpf_printk("PATH REJECTED: %s", r->filepath);
+            debug_count++;
+        }
+        return 0;
+    }
+    
     if (s)
         s->fs_events++;
 

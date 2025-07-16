@@ -10,6 +10,8 @@
 #ifndef __DIRT_H
 #define __DIRT_H
 
+#include <stdbool.h>
+
 /* define minimal kernel requirement */
 #define KERNEL_VERSION_MIN 5
 #define KERNEL_MAJOR_MIN   10
@@ -192,6 +194,7 @@ struct FS_EVENT fsevt[] = {{I_CREATE, FS_CREATE, "CREATE", "CRE", "CR"},
 #define CACHE_ENTRIES_MAX         65536
 #define MAP_RECORDS_MAX           65536
 #define MAP_PIDS_MAX              8192
+#define MAP_ALLOWED_PATHS_MAX     1024  // Maximum number of allowed paths
 #define RECORD_TYPE_FILE          1
 #define TASK_COMM_LEN             32
 #define TASK_COMM_SHORT_LEN       16
@@ -419,5 +422,13 @@ static inline uint64_t crc64(uint64_t crc, const unsigned char *s, uint64_t l) {
     }
     return crc;
 }
+
+#define PREFIX_MAX_LEN 16
+
+/* define allowed path structure for filtering */
+struct allowed_prefix {
+    char prefix[PREFIX_MAX_LEN];
+    bool enabled;
+};
 
 #endif /* __DIRT_H */
