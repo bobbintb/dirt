@@ -268,8 +268,11 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
 
 /* kretprobe for FS_CREATE event of regular file */
 SEC("kretprobe/do_filp_open")
-int BPF_KRETPROBE(do_filp_open, struct file *filp) {
+int BPF_KRETPROBE(do_filp_open, int ret) {
     KPROBE_SWITCH(MONITOR_FILE);
+    if (ret < 0)
+        return 0;
+    struct file *filp = (struct file *)PT_REGS_RC(ctx);
     if (BPF_CORE_READ(filp, f_mode) & FMODE_CREATED) {
         struct FS_EVENT_INFO event = {I_CREATE, BPF_CORE_READ(filp, f_path.dentry), NULL, "do_filp_open"};
         handle_fs_event(ctx, &event);
@@ -278,42 +281,36 @@ int BPF_KRETPROBE(do_filp_open, struct file *filp) {
 }
 
 /* kprobe for FS_CREATE event of hard link */
-SEC("kprobe/security_inode_link")
-int BPF_KPROBE(security_inode_link, struct dentry *old_dentry, struct inode *dir, struct dentry *new_dentry) {
+SEC("kretprobe/vfs_link")
+int BPF_KRETPROBE(vfs_link, int ret, struct dentry *old_dentry, struct inode *dir, struct dentry *new_dentry) {
     KPROBE_SWITCH(MONITOR_FILE);
-    struct FS_EVENT_INFO event = {I_CREATE, new_dentry, old_dentry, "security_inode_link"};
-    handle_fs_event(ctx, &event);
-    return 0;
-}
-
-/* dependent kprobes for FS_CREATE event of symbolic link */
-struct dentry *dentry_symlink = NULL;
-SEC("kprobe/security_inode_symlink")
-int BPF_KPROBE(security_inode_symlink, struct inode *dir, struct dentry *dentry, const char *old_name) {
-    KPROBE_SWITCH(MONITOR_FILE);
-    dentry_symlink = dentry;
-    return 0;
-}
-SEC("kprobe/dput")
-int BPF_KPROBE(dput, struct dentry *dentry) {
-    KPROBE_SWITCH(MONITOR_FILE);
-    int imode = BPF_CORE_READ(dentry, d_inode, i_mode);
-    int ino = BPF_CORE_READ(dentry, d_inode, i_ino);
-    if (!(S_ISLNK(imode) && ino && dentry_symlink == dentry))
+    if (ret)
         return 0;
-    dentry_symlink = NULL;
-    struct FS_EVENT_INFO event = {I_CREATE, dentry, NULL, "dput+security_inode_symlink"};
+    struct FS_EVENT_INFO event = {I_CREATE, new_dentry, old_dentry, "vfs_link"};
     handle_fs_event(ctx, &event);
     return 0;
 }
 
-/* kprobe for FS_ATTRIB, FS_ACCESS and FS_MODIFY eventis */
-SEC("kprobe/notify_change")
-int BPF_KPROBE(notify_change, struct dentry *dentry, struct iattr *attr) {
+/* kprobe for FS_CREATE event of symbolic link */
+SEC("kretprobe/vfs_symlink")
+int BPF_KRETPROBE(vfs_symlink, int ret, struct inode *dir, struct dentry *dentry, const char *old_name) {
     KPROBE_SWITCH(MONITOR_FILE);
-    __u32 mask = 0;
+    if (ret)
+        return 0;
+    struct FS_EVENT_INFO event = {I_CREATE, dentry, NULL, "vfs_symlink"};
+    handle_fs_event(ctx, &event);
+    return 0;
+}
 
-    int ia_valid = BPF_CORE_READ(attr, ia_valid);
+/* kretprobe for FS_ATTRIB, FS_ACCESS and FS_MODIFY events */
+SEC("kretprobe/notify_change")
+int BPF_KRETPROBE(notify_change, int ret, struct dentry *dentry, struct iattr *attr) {
+    KPROBE_SWITCH(MONITOR_FILE);
+    if (ret)
+        return 0;
+
+    __u32 mask = 0;
+    int   ia_valid = BPF_CORE_READ(attr, ia_valid);
     if (ia_valid & ATTR_UID)
         mask |= FS_ATTRIB;
     if (ia_valid & ATTR_GID)
@@ -344,46 +341,30 @@ int BPF_KPROBE(notify_change, struct dentry *dentry, struct iattr *attr) {
     return 0;
 }
 
-/* kprobe for FS_ATTRIB and FS_MODIFY events */
-SEC("kprobe/__fsnotify_parent")
-int BPF_KPROBE(__fsnotify_parent, struct dentry *dentry, __u32 mask, const void *data, int data_type) {
+/* kretprobe for FS_MOVED_FROM and FS_MOVED_TO event */
+SEC("kretprobe/vfs_rename")
+int BPF_KRETPROBE(vfs_rename, int ret, struct inode *old_dir, struct dentry *old_dentry, struct inode *new_dir,
+                  struct dentry *new_dentry) {
     KPROBE_SWITCH(MONITOR_FILE);
-    if (mask & FS_ATTRIB) {
-        struct FS_EVENT_INFO event_attrib = {I_ATTRIB, dentry, NULL, "__fsnotify_parent"};
-        handle_fs_event(ctx, &event_attrib);
-    }
-    if (mask & FS_MODIFY) {
-        struct FS_EVENT_INFO event_modify = {I_MODIFY, dentry, NULL, "__fsnotify_parent"};
-        handle_fs_event(ctx, &event_modify);
-    }
-    if (mask & FS_ACCESS) {
-        struct FS_EVENT_INFO event_access = {I_ACCESS, dentry, NULL, "__fsnotify_parent"};
-        handle_fs_event(ctx, &event_access);
-    }
-    return 0;
-}
-
-
-/* kprobe for FS_MOVED_FROM snd FS_MOVED_TO event */
-SEC("kprobe/security_inode_rename")
-int BPF_KPROBE(security_inode_rename, struct inode *old_dir, struct dentry *old_dentry, struct inode *new_dir,
-               struct dentry *new_dentry) {
-    KPROBE_SWITCH(MONITOR_FILE);
+    if (ret)
+        return 0;
     if (((BPF_CORE_READ(old_dentry, d_flags) & DCACHE_ENTRY_TYPE) == DCACHE_DIRECTORY_TYPE) ||
         ((BPF_CORE_READ(old_dentry, d_flags) & DCACHE_ENTRY_TYPE) == DCACHE_AUTODIR_TYPE))
         return 0;
-    struct FS_EVENT_INFO event_from = {I_MOVED_FROM, old_dentry, NULL, "security_inode_rename"};
+    struct FS_EVENT_INFO event_from = {I_MOVED_FROM, old_dentry, NULL, "vfs_rename"};
     handle_fs_event(ctx, &event_from);
-    struct FS_EVENT_INFO event_to = {I_MOVED_TO, new_dentry, old_dentry, "security_inode_rename"};
+    struct FS_EVENT_INFO event_to = {I_MOVED_TO, new_dentry, old_dentry, "vfs_rename"};
     handle_fs_event(ctx, &event_to);
     return 0;
 }
 
-/* kprobe for FS_DELETE event */
-SEC("kprobe/security_inode_unlink")
-int BPF_KPROBE(security_inode_unlink, struct inode *dir, struct dentry *dentry) {
+/* kretprobe for FS_DELETE event */
+SEC("kretprobe/vfs_unlink")
+int BPF_KRETPROBE(vfs_unlink, int ret, struct inode *dir, struct dentry *dentry) {
     KPROBE_SWITCH(MONITOR_FILE);
-    struct FS_EVENT_INFO event = {I_DELETE, dentry, NULL, "security_inode_unlink"};
+    if (ret)
+        return 0;
+    struct FS_EVENT_INFO event = {I_DELETE, dentry, NULL, "vfs_unlink"};
     handle_fs_event(ctx, &event);
     return 0;
 }
