@@ -4,7 +4,7 @@ TEST_SOCKET_PATH="/tmp/kflowd_test.sock"
 OUTPUT_FILE="/tmp/kflowd_test_output.txt"
 # KFLOWD_PATH="../bin/kflowd" # Assuming script is run from tests/ directory
 # Updated path to match CI build output structure when run from repo root:
-KFLOWD_PATH="./src/x86_64/kflowd"
+KFLOWD_PATH="./bin/dirt"
 
 # Clean up previous test runs if any
 rm -f "$TEST_SOCKET_PATH"
@@ -41,7 +41,7 @@ echo "socat is running."
 echo "Running kflowd to send data to $TEST_SOCKET_PATH..."
 # Ensure kflowd is run with sudo if it needs root privileges
 # Using timeout to ensure kflowd doesn't run indefinitely
-timeout 5s sudo "$KFLOWD_PATH" -x "$TEST_SOCKET_PATH" -q
+timeout 5s sudo "$KFLOWD_PATH" -x "$TEST_SOCKET_PATH" -q -b "$(pwd)/vmlinux/x86/vmlinux.h"
 
 KFLOWD_EXIT_CODE=$?
 if [ $KFLOWD_EXIT_CODE -eq 124 ]; then

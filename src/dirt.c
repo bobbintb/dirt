@@ -60,6 +60,7 @@ static char usage_str[] =
     "  -T TOKEN                 Token specified on host to be included in json output\n"
     "  -p PATH_FILE             File containing allowed file paths (one per line)\n"
     "                             If not specified, all files are monitored\n"
+    "  -b BTF_PATH              Path to vmlinux BTF file\n"
     "  -l, --legend             Show legend\n"
     "  -h, --help               Show help\n"
     "      --version            Show version\n"
@@ -121,6 +122,7 @@ static struct CONFIG {
     char  debug[DBG_LEN_MAX];
     char  allowed_paths_file[FILEPATH_LEN_MAX]; // File containing allowed paths
     bool  path_filtering_enabled; // Whether path filtering is enabled
+    char  btf_path[FILEPATH_LEN_MAX];
 } config = {0};
 
 
@@ -364,7 +366,7 @@ int main(int argc, char **argv) {
     uname(&local_utsn);
 
 
-    while ((opt = getopt_long(argc, argv, ":e:o:x:qdT:lhVD:p:", longopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, ":e:o:x:qdT:lhVD:p:b:", longopts, NULL)) != -1) {
         switch (opt) {
         case 'e':
             config.agg_events_max = atoi(optarg);
@@ -432,6 +434,13 @@ int main(int argc, char **argv) {
             config.path_filtering_enabled = true;
             argn += 2;
             break;
+        case 'b':
+            if (strlen(optarg) > sizeof(config.btf_path) - 1)
+                usage("Invalid BTF path with too many characters specified");
+            strncpy(config.btf_path, optarg, sizeof(config.btf_path) - 1);
+            config.btf_path[sizeof(config.btf_path) - 1] = '\0';
+            argn += 2;
+            break;
         case 0:
             if (opt_version) {
                 char dt[DATETIME_LEN_MAX];
@@ -461,11 +470,20 @@ int main(int argc, char **argv) {
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
-    skel = dirt_bpf__open();
+    struct bpf_object_open_opts *open_opts;
+    open_opts = (struct bpf_object_open_opts *)calloc(1, sizeof(struct bpf_object_open_opts));
+    open_opts->sz = sizeof(struct bpf_object_open_opts);
+    if (config.btf_path[0]) {
+        open_opts->btf_custom_path = config.btf_path;
+    }
+
+    skel = dirt_bpf__open_opts(open_opts);
     if (!skel) {
         fprintf(stderr, "Failed to open and load BPF skeleton\n");
+        free(open_opts);
         return 1;
     }
+    free(open_opts);
 
     if (config.mode_daemon) {
         if (daemon(true, true)) {
