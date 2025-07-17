@@ -316,16 +316,40 @@ int BPF_KRETPROBE(vfs_write, int ret) {
     return 0;
 }
 
-/* kretprobe for FS_ATTRIB events */
-SEC("kretprobe/vfs_setattr")
-int BPF_KRETPROBE(vfs_setattr, int ret) {
+/* kprobe for FS_ATTRIB, FS_ACCESS and FS_MODIFY eventis */
+SEC("kprobe/notify_change")
+int BPF_KPROBE(notify_change, struct dentry *dentry, struct iattr *attr) {
     KPROBE_SWITCH(MONITOR_FILE);
-    if (ret < 0) {
-        return 0;
+    __u32 mask = 0;
+
+    int ia_valid = BPF_CORE_READ(attr, ia_valid);
+    if (ia_valid & ATTR_UID)
+        mask |= FS_ATTRIB;
+    if (ia_valid & ATTR_GID)
+        mask |= FS_ATTRIB;
+    if (ia_valid & ATTR_SIZE)
+        mask |= FS_MODIFY;
+    if ((ia_valid & (ATTR_ATIME | ATTR_MTIME)) == (ATTR_ATIME | ATTR_MTIME))
+        mask |= FS_ATTRIB;
+    else if (ia_valid & ATTR_ATIME)
+        mask |= FS_ACCESS;
+    else if (ia_valid & ATTR_MTIME)
+        mask |= FS_MODIFY;
+    if (ia_valid & ATTR_MODE)
+        mask |= FS_ATTRIB;
+
+    if (mask & FS_ATTRIB) {
+        struct FS_EVENT_INFO event_attrib = {I_ATTRIB, dentry, NULL, "notify_change"};
+        handle_fs_event(ctx, &event_attrib);
     }
-    struct dentry *dentry = (struct dentry *)PT_REGS_PARM1(ctx);
-    struct FS_EVENT_INFO event = {I_ATTRIB, dentry, NULL, "vfs_setattr"};
-    handle_fs_event(ctx, &event);
+    if (mask & FS_MODIFY) {
+        struct FS_EVENT_INFO event_modify = {I_MODIFY, dentry, NULL, "notify_change"};
+        handle_fs_event(ctx, &event_modify);
+    }
+    if (mask & FS_ACCESS) {
+        struct FS_EVENT_INFO event_access = {I_ACCESS, dentry, NULL, "notify_change"};
+        handle_fs_event(ctx, &event_access);
+    }
     return 0;
 }
 
