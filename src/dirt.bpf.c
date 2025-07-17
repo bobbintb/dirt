@@ -122,11 +122,6 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
     __u32               ino;
     __u32               cnt;
 
-    // Filter out ACCESS and ATTRIB events as they are no longer needed
-    if (event->index == I_ACCESS || event->index == I_ATTRIB) {
-        return 0;
-    }
-
     pid = bpf_get_current_pid_tgid() >> 32;
 
     if (pid_self == pid)
@@ -270,8 +265,9 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
 SEC("kretprobe/do_filp_open")
 int BPF_KRETPROBE(do_filp_open, int ret) {
     KPROBE_SWITCH(MONITOR_FILE);
-    if (ret < 0)
+    if (ret < 0) {
         return 0;
+    }
     struct file *filp = (struct file *)PT_REGS_RC(ctx);
     if (BPF_CORE_READ(filp, f_mode) & FMODE_CREATED) {
         struct FS_EVENT_INFO event = {I_CREATE, BPF_CORE_READ(filp, f_path.dentry), NULL, "do_filp_open"};
@@ -280,74 +276,68 @@ int BPF_KRETPROBE(do_filp_open, int ret) {
     return 0;
 }
 
-/* kprobe for FS_CREATE event of hard link */
+/* kretprobe for FS_CREATE event of hard link */
 SEC("kretprobe/vfs_link")
-int BPF_KRETPROBE(vfs_link, int ret, struct dentry *old_dentry, struct inode *dir, struct dentry *new_dentry) {
+int BPF_KRETPROBE(vfs_link, int ret) {
     KPROBE_SWITCH(MONITOR_FILE);
-    if (ret)
+    if (ret < 0) {
         return 0;
+    }
+    struct dentry *old_dentry = (struct dentry *)PT_REGS_PARM1(ctx);
+    struct dentry *new_dentry = (struct dentry *)PT_REGS_PARM3(ctx);
     struct FS_EVENT_INFO event = {I_CREATE, new_dentry, old_dentry, "vfs_link"};
     handle_fs_event(ctx, &event);
     return 0;
 }
 
-/* kprobe for FS_CREATE event of symbolic link */
+/* kretprobe for FS_CREATE event of symbolic link */
 SEC("kretprobe/vfs_symlink")
-int BPF_KRETPROBE(vfs_symlink, int ret, struct inode *dir, struct dentry *dentry, const char *old_name) {
+int BPF_KRETPROBE(vfs_symlink, int ret) {
     KPROBE_SWITCH(MONITOR_FILE);
-    if (ret)
+    if (ret < 0) {
         return 0;
+    }
+    struct dentry *dentry = (struct dentry *)PT_REGS_PARM2(ctx);
     struct FS_EVENT_INFO event = {I_CREATE, dentry, NULL, "vfs_symlink"};
     handle_fs_event(ctx, &event);
     return 0;
 }
 
-/* kretprobe for FS_ATTRIB, FS_ACCESS and FS_MODIFY events */
-SEC("kretprobe/notify_change")
-int BPF_KRETPROBE(notify_change, int ret, struct dentry *dentry, struct iattr *attr) {
+/* kretprobe for FS_MODIFY events */
+SEC("kretprobe/vfs_write")
+int BPF_KRETPROBE(vfs_write, int ret) {
     KPROBE_SWITCH(MONITOR_FILE);
-    if (ret)
+    if (ret < 0) {
         return 0;
+    }
+    struct file *file = (struct file *)PT_REGS_PARM1(ctx);
+    struct FS_EVENT_INFO event = {I_MODIFY, BPF_CORE_READ(file, f_path.dentry), NULL, "vfs_write"};
+    handle_fs_event(ctx, &event);
+    return 0;
+}
 
-    __u32 mask = 0;
-    int   ia_valid = BPF_CORE_READ(attr, ia_valid);
-    if (ia_valid & ATTR_UID)
-        mask |= FS_ATTRIB;
-    if (ia_valid & ATTR_GID)
-        mask |= FS_ATTRIB;
-    if (ia_valid & ATTR_SIZE)
-        mask |= FS_MODIFY;
-    if ((ia_valid & (ATTR_ATIME | ATTR_MTIME)) == (ATTR_ATIME | ATTR_MTIME))
-        mask |= FS_ATTRIB;
-    else if (ia_valid & ATTR_ATIME)
-        mask |= FS_ACCESS;
-    else if (ia_valid & ATTR_MTIME)
-        mask |= FS_MODIFY;
-    if (ia_valid & ATTR_MODE)
-        mask |= FS_ATTRIB;
-
-    if (mask & FS_ATTRIB) {
-        struct FS_EVENT_INFO event_attrib = {I_ATTRIB, dentry, NULL, "notify_change"};
-        handle_fs_event(ctx, &event_attrib);
+/* kretprobe for FS_ATTRIB events */
+SEC("kretprobe/vfs_setattr")
+int BPF_KRETPROBE(vfs_setattr, int ret) {
+    KPROBE_SWITCH(MONITOR_FILE);
+    if (ret < 0) {
+        return 0;
     }
-    if (mask & FS_MODIFY) {
-        struct FS_EVENT_INFO event_modify = {I_MODIFY, dentry, NULL, "notify_change"};
-        handle_fs_event(ctx, &event_modify);
-    }
-    if (mask & FS_ACCESS) {
-        struct FS_EVENT_INFO event_access = {I_ACCESS, dentry, NULL, "notify_change"};
-        handle_fs_event(ctx, &event_access);
-    }
+    struct dentry *dentry = (struct dentry *)PT_REGS_PARM1(ctx);
+    struct FS_EVENT_INFO event = {I_ATTRIB, dentry, NULL, "vfs_setattr"};
+    handle_fs_event(ctx, &event);
     return 0;
 }
 
 /* kretprobe for FS_MOVED_FROM and FS_MOVED_TO event */
 SEC("kretprobe/vfs_rename")
-int BPF_KRETPROBE(vfs_rename, int ret, struct inode *old_dir, struct dentry *old_dentry, struct inode *new_dir,
-                  struct dentry *new_dentry) {
+int BPF_KRETPROBE(vfs_rename, int ret) {
     KPROBE_SWITCH(MONITOR_FILE);
-    if (ret)
+    if (ret < 0) {
         return 0;
+    }
+    struct dentry *old_dentry = (struct dentry *)PT_REGS_PARM2(ctx);
+    struct dentry *new_dentry = (struct dentry *)PT_REGS_PARM4(ctx);
     if (((BPF_CORE_READ(old_dentry, d_flags) & DCACHE_ENTRY_TYPE) == DCACHE_DIRECTORY_TYPE) ||
         ((BPF_CORE_READ(old_dentry, d_flags) & DCACHE_ENTRY_TYPE) == DCACHE_AUTODIR_TYPE))
         return 0;
@@ -360,10 +350,12 @@ int BPF_KRETPROBE(vfs_rename, int ret, struct inode *old_dir, struct dentry *old
 
 /* kretprobe for FS_DELETE event */
 SEC("kretprobe/vfs_unlink")
-int BPF_KRETPROBE(vfs_unlink, int ret, struct inode *dir, struct dentry *dentry) {
+int BPF_KRETPROBE(vfs_unlink, int ret) {
     KPROBE_SWITCH(MONITOR_FILE);
-    if (ret)
+    if (ret < 0) {
         return 0;
+    }
+    struct dentry *dentry = (struct dentry *)PT_REGS_PARM2(ctx);
     struct FS_EVENT_INFO event = {I_DELETE, dentry, NULL, "vfs_unlink"};
     handle_fs_event(ctx, &event);
     return 0;

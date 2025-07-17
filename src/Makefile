@@ -72,7 +72,7 @@ check: $(APPS)
 .PHONY: test
 test:
 	$(call msg,TEST)
-	$(Q)echo | sudo ./dirt | timeout 60 grep -m1 InfoSequenceNumber
+	$(Q)echo | sudo /app/bin/dirt | timeout 60 grep -m1 InfoSequenceNumber
 
 .PHONY: ctags
 ctags:

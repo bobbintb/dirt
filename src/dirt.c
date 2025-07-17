@@ -455,13 +455,36 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    setenv("BPF_OPTS", "btf_custom_path=/app/vmlinux/x86/vmlinux.h", 1);
+
     libbpf_set_strict_mode(LIBBPF_STRICT_ALL);
     libbpf_set_print(libbpf_print_fn);
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
 
-    skel = dirt_bpf__open();
+    FILE *f = fopen("/app/src/.output/dirt.bpf.o", "rb");
+    if (!f) {
+        fprintf(stderr, "Failed to open BPF object file\n");
+        return 1;
+    }
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    void *buf = malloc(size);
+    fread(buf, size, 1, f);
+    fclose(f);
+
+    struct bpf_object_open_opts opts = {};
+    opts.sz = sizeof(opts);
+    opts.object_name = "dirt_bpf";
+    struct bpf_object *obj = bpf_object__open_mem(buf, size, &opts);
+    if (!obj) {
+        fprintf(stderr, "Failed to open BPF object\n");
+        return 1;
+    }
+
+    skel = dirt_bpf__open_opts(NULL);
     if (!skel) {
         fprintf(stderr, "Failed to open and load BPF skeleton\n");
         return 1;
