@@ -146,38 +146,28 @@ struct FS_EVENT {
 /* define filesystem event index */
 enum INDEX_FS_EVENT {
     I_CREATE,
-    I_OPEN,          // Restored for compilation, filter in BPF handles it
-    I_OPEN_EXEC,     // Restored for compilation
-    I_ACCESS,        // Restored for compilation
-    I_ATTRIB,        // Restored for compilation
     I_MODIFY,
-    I_CLOSE_WRITE,   // Restored for compilation
-    I_CLOSE_NOWRITE, // Restored for compilation
     I_MOVED_FROM,
     I_MOVED_TO,
     I_DELETE,
     I_DELETE_SELF,
     I_MOVE_SELF,
     I_UNMOUNT,
-    I_Q_OVERFLOW
+    I_Q_OVERFLOW,
+    I_CLOSE_WRITE,
 };
 
 /* global instance shared betwwwn user and kernel-side code */
 struct FS_EVENT fsevt[] = {{I_CREATE, FS_CREATE, "CREATE", "CRE", "CR"},
-                           {I_OPEN, FS_OPEN, "OPEN", "OPN", "OP"}, // Restored
-                           {I_OPEN_EXEC, FS_OPEN_EXEC, "OPEN_EXEC", "OPX", "OX"}, // Restored
-                           {I_ACCESS, FS_ACCESS, "ACCESS", "ACC", "AC"}, // Restored
-                           {I_ATTRIB, FS_ATTRIB, "ATTRIB", "ATT", "AT"}, // Restored
                            {I_MODIFY, FS_MODIFY, "MODIFY", "MOD", "MO"},
-                           {I_CLOSE_WRITE, FS_CLOSE_WRITE, "CLOSE_WRITE", "CLW", "CW"}, // Restored
-                           {I_CLOSE_NOWRITE, FS_CLOSE_NOWRITE, "CLOSE_NOWRITE", "CLN", "CN"}, // Restored
                            {I_MOVED_FROM, FS_MOVED_FROM, "MOVED_FROM", "MVF", "MF"},
                            {I_MOVED_TO, FS_MOVED_TO, "MOVED_TO", "MVT", "MT"},
                            {I_DELETE, FS_DELETE, "DELETE", "DEL", "DE"},
                            {I_DELETE_SELF, FS_DELETE_SELF, "DELETE_SELF", "DSF", "DS"},
                            {I_MOVE_SELF, FS_MOVE_SELF, "MOVE_SELF", "MSF", "MS"},
                            {I_UNMOUNT, FS_UNMOUNT, "UNMOUNT", "UNM", "UM"},
-                           {I_Q_OVERFLOW, FS_Q_OVERFLOW, "Q_OVERFLOW", "QOF", "QO"}};
+                           {I_Q_OVERFLOW, FS_Q_OVERFLOW, "Q_OVERFLOW", "QOF", "QO"},
+                           {I_CLOSE_WRITE, FS_CLOSE_WRITE, "CLOSE_WRITE", "CLW", "CW"}};
 
 /* define various non-kernel macros */
 #define TOLOWER_STR(str)                                                                                               \

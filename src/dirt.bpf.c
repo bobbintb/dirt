@@ -11,6 +11,7 @@
 #include "dirt.h"
 
 #include <bpf/bpf_core_read.h>
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_endian.h>
@@ -44,11 +45,21 @@ struct {
     __type(value, struct STATS);
 } stats SEC(".maps");
 
+struct file_info_t {
+    struct dentry *dentry;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, MAP_RECORDS_MAX);
+    __type(key, __u64);
+    __type(value, struct file_info_t);
+} opened_files SEC(".maps");
+
 /* map for storing allowed file paths */
 
 /* glabal variables shared with userspace */
 const volatile __u64 ts_start;
-const volatile __u32 agg_events_max;
 const volatile pid_t pid_self;
 const volatile pid_t pid_shell;
 volatile __u32       monitor = MONITOR_NONE;
@@ -121,11 +132,6 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
     __u32               index;
     __u32               ino;
     __u32               cnt;
-
-    // Filter out ACCESS and ATTRIB events as they are no longer needed
-    if (event->index == I_ACCESS || event->index == I_ATTRIB) {
-        return 0;
-    }
 
     pid = bpf_get_current_pid_tgid() >> 32;
 
@@ -234,27 +240,17 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
         return 0;
     }
 
-    agg_end = false;
-    if (index == I_CLOSE_WRITE || index == I_CLOSE_NOWRITE || index == I_DELETE || index == I_MOVED_TO ||
-        (index == I_CREATE && (S_ISLNK(imode) || r->inlink > 1)))
-        agg_end = true;
-    if (!agg_end && agg_events_max)
-        if (r->events >= agg_events_max)
-            agg_end = true;
-
-    if (agg_end) {
-        r->rc.type = RECORD_TYPE_FILE;
-        __u32 output_len = sizeof(*r);
-        if (bpf_ringbuf_output(&ringbuf_records, r, output_len, 0)) {
-            if (s)
-                s->fs_records_dropped++;
-        }
-        if (bpf_map_delete_elem(&hash_records, &key)) {
-            return 0;
-        }
+    r->rc.type = RECORD_TYPE_FILE;
+    __u32 output_len = sizeof(*r);
+    if (bpf_ringbuf_output(&ringbuf_records, r, output_len, 0)) {
         if (s)
-            s->fs_records_deleted++;
+            s->fs_records_dropped++;
     }
+    if (bpf_map_delete_elem(&hash_records, &key)) {
+        return 0;
+    }
+    if (s)
+        s->fs_records_deleted++;
 
     if ((s = bpf_map_lookup_elem(&stats, &zero))) {
         __u64 rsz = sizeof(*r);
@@ -286,6 +282,64 @@ int BPF_KPROBE(security_inode_link, struct dentry *old_dentry, struct inode *dir
     return 0;
 }
 
+static __always_inline struct file *get_filp_from_fd(unsigned int fd)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task();
+    struct files_struct *files = BPF_CORE_READ(task, files);
+    struct fdtable *fdt = BPF_CORE_READ(files, fdt);
+    struct file **p_fd;
+    struct file *filp;
+
+    if (fd >= BPF_CORE_READ(fdt, max_fds))
+        return NULL;
+
+    p_fd = BPF_CORE_READ(fdt, fd);
+    bpf_probe_read_kernel(&filp, sizeof(filp), p_fd);
+
+    return filp;
+}
+
+SEC("kprobe/vfs_write")
+int BPF_KPROBE(vfs_write, struct file *file, const char *buf, size_t count, loff_t *pos) {
+    KPROBE_SWITCH(MONITOR_FILE);
+
+    pid_t pid = bpf_get_current_pid_tgid() >> 32;
+    if (pid_self == pid)
+        return 0;
+
+    struct file_info_t info = {};
+    info.dentry = BPF_CORE_READ(file, f_path.dentry);
+
+    __u64 key = (__u64)file;
+    bpf_map_update_elem(&opened_files, &key, &info, BPF_ANY);
+
+    return 0;
+}
+
+SEC("kretprobe/__x64_sys_close")
+int BPF_KRETPROBE(__x64_sys_close, int fd) {
+    KPROBE_SWITCH(MONITOR_FILE);
+
+    pid_t pid = bpf_get_current_pid_tgid() >> 32;
+    if (pid_self == pid)
+        return 0;
+
+    struct file *filp = get_filp_from_fd(fd);
+    if (!filp)
+        return 0;
+
+    __u64 key = (__u64)filp;
+    struct file_info_t *info = bpf_map_lookup_elem(&opened_files, &key);
+
+    if (info) {
+        struct FS_EVENT_INFO event = {I_CLOSE_WRITE, info->dentry, NULL, "close"};
+        handle_fs_event(ctx, &event);
+        bpf_map_delete_elem(&opened_files, &key);
+    }
+
+    return 0;
+}
+
 /* dependent kprobes for FS_CREATE event of symbolic link */
 struct dentry *dentry_symlink = NULL;
 SEC("kprobe/security_inode_symlink")
@@ -307,61 +361,6 @@ int BPF_KPROBE(dput, struct dentry *dentry) {
     return 0;
 }
 
-/* kprobe for FS_ATTRIB, FS_ACCESS and FS_MODIFY eventis */
-SEC("kprobe/notify_change")
-int BPF_KPROBE(notify_change, struct dentry *dentry, struct iattr *attr) {
-    KPROBE_SWITCH(MONITOR_FILE);
-    __u32 mask = 0;
-
-    int ia_valid = BPF_CORE_READ(attr, ia_valid);
-    if (ia_valid & ATTR_UID)
-        mask |= FS_ATTRIB;
-    if (ia_valid & ATTR_GID)
-        mask |= FS_ATTRIB;
-    if (ia_valid & ATTR_SIZE)
-        mask |= FS_MODIFY;
-    if ((ia_valid & (ATTR_ATIME | ATTR_MTIME)) == (ATTR_ATIME | ATTR_MTIME))
-        mask |= FS_ATTRIB;
-    else if (ia_valid & ATTR_ATIME)
-        mask |= FS_ACCESS;
-    else if (ia_valid & ATTR_MTIME)
-        mask |= FS_MODIFY;
-    if (ia_valid & ATTR_MODE)
-        mask |= FS_ATTRIB;
-
-    if (mask & FS_ATTRIB) {
-        struct FS_EVENT_INFO event_attrib = {I_ATTRIB, dentry, NULL, "notify_change"};
-        handle_fs_event(ctx, &event_attrib);
-    }
-    if (mask & FS_MODIFY) {
-        struct FS_EVENT_INFO event_modify = {I_MODIFY, dentry, NULL, "notify_change"};
-        handle_fs_event(ctx, &event_modify);
-    }
-    if (mask & FS_ACCESS) {
-        struct FS_EVENT_INFO event_access = {I_ACCESS, dentry, NULL, "notify_change"};
-        handle_fs_event(ctx, &event_access);
-    }
-    return 0;
-}
-
-/* kprobe for FS_ATTRIB and FS_MODIFY events */
-SEC("kprobe/__fsnotify_parent")
-int BPF_KPROBE(__fsnotify_parent, struct dentry *dentry, __u32 mask, const void *data, int data_type) {
-    KPROBE_SWITCH(MONITOR_FILE);
-    if (mask & FS_ATTRIB) {
-        struct FS_EVENT_INFO event_attrib = {I_ATTRIB, dentry, NULL, "__fsnotify_parent"};
-        handle_fs_event(ctx, &event_attrib);
-    }
-    if (mask & FS_MODIFY) {
-        struct FS_EVENT_INFO event_modify = {I_MODIFY, dentry, NULL, "__fsnotify_parent"};
-        handle_fs_event(ctx, &event_modify);
-    }
-    if (mask & FS_ACCESS) {
-        struct FS_EVENT_INFO event_access = {I_ACCESS, dentry, NULL, "__fsnotify_parent"};
-        handle_fs_event(ctx, &event_access);
-    }
-    return 0;
-}
 
 
 /* kprobe for FS_MOVED_FROM snd FS_MOVED_TO event */

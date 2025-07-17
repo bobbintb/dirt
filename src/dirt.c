@@ -43,10 +43,8 @@ static char header_str[] = "\e[1;33mdirt -- (c) 2024 Tarsal, Inc\e[0m\n"
                            "\e[0;33mKernel-based Process Monitoring via eBPF subsystem (" VERSION ")\e[0m\n";
 static char usage_str[] =
     "Usage:\n"
-    "  dirt [-e EVENTS] [-o json|json-min] [-x SOCKET_PATH] [-q] [-d] [-V] [-T TOKEN]\n"
+    "  dirt [-o json|json-min] [-x SOCKET_PATH] [-q] [-d] [-V] [-T TOKEN]\n"
     "         [-p PATH_FILE] [-l] [--legend], [-h] [--help], [--version]\n"
-    "  -e EVENTS                Max number of filesystem events per aggregated record until export\n"
-    "                             (default: disabled, '1': no aggregation)\n"
     "  -o json                  Json output with formatting (default)\n"
     "     json-min              Json output with minimal formatting \n"
     "  -x SOCKET_PATH           Unix domain socket path to send json output to.\n"
@@ -111,7 +109,6 @@ static volatile bool      running = false;
 static struct CONFIG {
     int   monitor;
     bool  mode_daemon;
-    int   agg_events_max;
     int   output_type;
     char  output_unix_socket_path[UNIX_SOCKET_PATH_MAX];
     bool  output_unix_socket; // Flag to indicate if socket path is set
@@ -350,11 +347,9 @@ int main(int argc, char **argv) {
     int                 kminor = 0;
     struct stat         stats_check = {0};
     FILE               *fp = NULL;
-    bool                invalid = false;
     int                 jit_enable = 0;
     int                 err;
     int                 argn = 1;
-    int                 cnt;
     int                 opt;
 
     config.monitor = MONITOR_FILE;
@@ -364,18 +359,8 @@ int main(int argc, char **argv) {
     uname(&local_utsn);
 
 
-    while ((opt = getopt_long(argc, argv, ":e:o:x:qdT:lhVD:p:", longopts, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, ":o:x:qdT:lhVD:p:", longopts, NULL)) != -1) {
         switch (opt) {
-        case 'e':
-            config.agg_events_max = atoi(optarg);
-            for (cnt = 0; cnt < (int)strlen(optarg); cnt++)
-                if (!isdigit(optarg[cnt]))
-                    invalid = true;
-            if (invalid || config.agg_events_max <= 0) {
-                usage("Invalid max number of file system events specified");
-            }
-            argn += 2;
-            break;
         case 'o':
             if (!strncmp(optarg, "json-min", strlen(optarg)))
                 config.output_type = JSON_MIN;
@@ -476,7 +461,6 @@ int main(int argc, char **argv) {
 
     clock_gettime(CLOCK_MONOTONIC, &spec);
     skel->rodata->ts_start = (uint64_t)((spec.tv_sec * (uint64_t)1e9) + spec.tv_nsec);
-    skel->rodata->agg_events_max = config.agg_events_max;
     memcpy(skel->rodata->debug, config.debug, DBG_LEN_MAX);
     skel->rodata->pid_self = getpid();
 
@@ -565,14 +549,6 @@ int main(int argc, char **argv) {
     fprintf(stderr, "\e[0;32m[+]\e[0m Monitored kernel subsystem(s)\n");
     fprintf(stderr, "\e[0;32m[+]\e[0m   \e[0mFile System:     %7u max records at %lu bytes \e[0m\n",
             MAP_RECORDS_MAX, sizeof(struct RECORD_FS));
-    fprintf(stderr, "\e[0;%s\e[0m Filesystem aggregation by PID+Inode until\n",
-            config.agg_events_max == 1 ? "33m[-]" : "32m[+]");
-    fprintf(stderr, "\e[0;%s\e[0m   Finished file operation\n", "32m[+]");
-    if (config.agg_events_max)
-        fprintf(stderr, "\e[0;32m[+]\e[0m   \e[%sMax number of %.0u%sevent%s\e[0m\n",
-                (config.agg_events_max || config.mode_daemon) ? "0m" : "0:37m", config.agg_events_max,
-                config.agg_events_max ? " " : "", config.agg_events_max == 1 ? " (no aggregation)" : "s");
-
     fprintf(stderr, "\e[0;%s\e[0m Output as %s to stdout\n",
             (config.output_unix_socket && (config.mode_daemon || config.output_quiet)) ? "33m[-]" : "32m[+]",
             config.output_type == JSON_FULL    ? "json"
