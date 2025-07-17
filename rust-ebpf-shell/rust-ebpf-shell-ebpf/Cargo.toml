@@ -1,0 +1,18 @@
+[package]
+name = "rust-ebpf-shell-ebpf"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+rust-ebpf-shell-common = { path = "../rust-ebpf-shell-common" }
+
+aya-ebpf = { workspace = true }
+aya-log-ebpf = { workspace = true }
+
+[build-dependencies]
+which = { workspace = true }
+bindgen = "0.69"
+
+[[bin]]
+name = "rust-ebpf-shell"
+path = "src/main.rs"
