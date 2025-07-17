@@ -124,6 +124,8 @@ static __always_inline int handle_fs_event(void *ctx, const struct FS_EVENT_INFO
 
     pid = bpf_get_current_pid_tgid() >> 32;
 
+    bpf_printk("handle_fs_event: received event from %s", event->func);
+
     if (pid_self == pid)
         return 0;
 
