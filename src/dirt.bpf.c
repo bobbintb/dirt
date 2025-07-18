@@ -44,6 +44,13 @@ struct {
     __type(value, struct STATS);
 } stats SEC(".maps");
 
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u64);
+    __type(value, struct dentry *);
+} VFS_UNLINK_ARGS SEC(".maps");
+
 /* map for storing allowed file paths */
 
 /* glabal variables shared with userspace */
@@ -364,6 +371,36 @@ int BPF_KPROBE(__fsnotify_parent, struct dentry *dentry, __u32 mask, const void 
 }
 
 
+SEC("kprobe/vfs_unlink")
+int BPF_KPROBE(vfs_unlink, struct inode *dir, struct dentry *dentry, struct inode **delegated_inode) {
+    u64 id = bpf_get_current_pid_tgid();
+    bpf_map_update_elem(&VFS_UNLINK_ARGS, &id, &dentry, BPF_ANY);
+    return 0;
+}
+
+SEC("kretprobe/vfs_unlink")
+int BPF_KRETPROBE(vfs_unlink_ret, int ret) {
+    u64 id = bpf_get_current_pid_tgid();
+    struct dentry **dentry_ptr;
+
+    if (ret != 0) {
+        goto cleanup;
+    }
+
+    dentry_ptr = bpf_map_lookup_elem(&VFS_UNLINK_ARGS, &id);
+    if (dentry_ptr == NULL) {
+        return 0;
+    }
+
+    struct dentry *dentry = *dentry_ptr;
+    struct FS_EVENT_INFO event = {I_DELETE, dentry, NULL, "vfs_unlink"};
+    handle_fs_event(ctx, &event);
+
+cleanup:
+    bpf_map_delete_elem(&VFS_UNLINK_ARGS, &id);
+    return 0;
+}
+
 /* kprobe for FS_MOVED_FROM snd FS_MOVED_TO event */
 SEC("kprobe/security_inode_rename")
 int BPF_KPROBE(security_inode_rename, struct inode *old_dir, struct dentry *old_dentry, struct inode *new_dir,
@@ -379,14 +416,6 @@ int BPF_KPROBE(security_inode_rename, struct inode *old_dir, struct dentry *old_
     return 0;
 }
 
-/* kprobe for FS_DELETE event */
-SEC("kprobe/security_inode_unlink")
-int BPF_KPROBE(security_inode_unlink, struct inode *dir, struct dentry *dentry) {
-    KPROBE_SWITCH(MONITOR_FILE);
-    struct FS_EVENT_INFO event = {I_DELETE, dentry, NULL, "security_inode_unlink"};
-    handle_fs_event(ctx, &event);
-    return 0;
-}
 
 /* DEBUG */
 static long                 debug_stack[MAX_STACK_TRACE_DEPTH] = {0};
