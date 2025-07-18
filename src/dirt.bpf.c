@@ -379,50 +379,17 @@ int BPF_KPROBE(security_inode_rename, struct inode *old_dir, struct dentry *old_
     return 0;
 }
 
-/* Map to store filename information during do_unlinkat entry */
-struct {
-    __uint(type, BPF_MAP_TYPE_HASH);
-    __uint(max_entries, 1024);
-    __type(key, u64);  /* thread ID */
-    __type(value, struct filename *);
-} do_unlinkat_filename_map SEC(".maps");
-
-/* kprobe for do_unlinkat entry - store filename */
-SEC("kprobe/do_unlinkat")
-int BPF_KPROBE(do_unlinkat_entry, int dfd, struct filename *name) {
+/* kretprobe for FS_DELETE event using vfs_unlink */
+SEC("kretprobe/vfs_unlink")
+int BPF_KRETPROBE(vfs_unlink, long ret) {
     KPROBE_SWITCH(MONITOR_FILE);
-    
-    u64 tid = bpf_get_current_pid_tgid();
-    bpf_map_update_elem(&do_unlinkat_filename_map, &tid, &name, BPF_ANY);
-    return 0;
-}
-
-/* kretprobe for do_unlinkat exit - check return value and fire event on success */
-SEC("kretprobe/do_unlinkat")
-int BPF_KRETPROBE(do_unlinkat_exit, long ret) {
-    KPROBE_SWITCH(MONITOR_FILE);
-    
-    u64 tid = bpf_get_current_pid_tgid();
     
     /* Only fire on successful unlink operations (ret == 0) */
-    if (ret != 0) {
-        /* Clean up the stored filename on failure */
-        bpf_map_delete_elem(&do_unlinkat_filename_map, &tid);
+    if (ret != 0)
         return 0;
-    }
     
-    /* Retrieve the stored filename */
-    struct filename **filename_ptr = bpf_map_lookup_elem(&do_unlinkat_filename_map, &tid);
-    if (!filename_ptr) {
-        return 0;
-    }
-    
-    struct filename *filename = *filename_ptr;
-    struct FS_EVENT_INFO event = {I_DELETE, NULL, NULL, "do_unlinkat"};
+    struct FS_EVENT_INFO event = {I_DELETE, NULL, NULL, "vfs_unlink"};
     handle_fs_event(ctx, &event);
-    
-    /* Clean up the stored filename */
-    bpf_map_delete_elem(&do_unlinkat_filename_map, &tid);
     return 0;
 }
 
