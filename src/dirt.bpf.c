@@ -379,50 +379,50 @@ int BPF_KPROBE(security_inode_rename, struct inode *old_dir, struct dentry *old_
     return 0;
 }
 
-/* Map to store dentry information during vfs_unlink entry */
+/* Map to store filename information during do_unlinkat entry */
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 1024);
     __type(key, u64);  /* thread ID */
-    __type(value, struct dentry *);
-} vfs_unlink_dentry_map SEC(".maps");
+    __type(value, struct filename *);
+} do_unlinkat_filename_map SEC(".maps");
 
-/* kprobe for vfs_unlink entry - store dentry */
-SEC("kprobe/vfs_unlink")
-int BPF_KPROBE(vfs_unlink_entry, struct inode *dir, struct dentry *dentry, struct inode **delegated_inode) {
+/* kprobe for do_unlinkat entry - store filename */
+SEC("kprobe/do_unlinkat")
+int BPF_KPROBE(do_unlinkat_entry, int dfd, struct filename *name) {
     KPROBE_SWITCH(MONITOR_FILE);
     
     u64 tid = bpf_get_current_pid_tgid();
-    bpf_map_update_elem(&vfs_unlink_dentry_map, &tid, &dentry, BPF_ANY);
+    bpf_map_update_elem(&do_unlinkat_filename_map, &tid, &name, BPF_ANY);
     return 0;
 }
 
-/* kretprobe for vfs_unlink exit - check return value and fire event on success */
-SEC("kretprobe/vfs_unlink")
-int BPF_KRETPROBE(vfs_unlink_exit, long ret) {
+/* kretprobe for do_unlinkat exit - check return value and fire event on success */
+SEC("kretprobe/do_unlinkat")
+int BPF_KRETPROBE(do_unlinkat_exit, long ret) {
     KPROBE_SWITCH(MONITOR_FILE);
+    
+    u64 tid = bpf_get_current_pid_tgid();
     
     /* Only fire on successful unlink operations (ret == 0) */
     if (ret != 0) {
-        /* Clean up the stored dentry on failure */
-        u64 tid = bpf_get_current_pid_tgid();
-        bpf_map_delete_elem(&vfs_unlink_dentry_map, &tid);
+        /* Clean up the stored filename on failure */
+        bpf_map_delete_elem(&do_unlinkat_filename_map, &tid);
         return 0;
     }
     
-    /* Retrieve the stored dentry */
-    u64 tid = bpf_get_current_pid_tgid();
-    struct dentry **dentry_ptr = bpf_map_lookup_elem(&vfs_unlink_dentry_map, &tid);
-    if (!dentry_ptr) {
+    /* Retrieve the stored filename */
+    struct filename **filename_ptr = bpf_map_lookup_elem(&do_unlinkat_filename_map, &tid);
+    if (!filename_ptr) {
         return 0;
     }
     
-    struct dentry *dentry = *dentry_ptr;
-    struct FS_EVENT_INFO event = {I_DELETE, dentry, NULL, "vfs_unlink"};
+    struct filename *filename = *filename_ptr;
+    struct FS_EVENT_INFO event = {I_DELETE, NULL, NULL, "do_unlinkat"};
     handle_fs_event(ctx, &event);
     
-    /* Clean up the stored dentry */
-    bpf_map_delete_elem(&vfs_unlink_dentry_map, &tid);
+    /* Clean up the stored filename */
+    bpf_map_delete_elem(&do_unlinkat_filename_map, &tid);
     return 0;
 }
 
