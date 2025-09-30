@@ -7,13 +7,12 @@ license.workspace = true
 
 [features]
 default = []
-user = ["aya", "serde", "serde_json", "serde_bytes"]
+user = ["aya", "serde", "serde_json"]
 
 [dependencies]
 aya = { workspace = true, optional = true }
 serde = { version = "1.0", features = ["derive"], optional = true }
 serde_json = { version = "1.0", optional = true }
-serde_bytes = { workspace = true, optional = true }
 
 [lib]
 path = "src/lib.rs"

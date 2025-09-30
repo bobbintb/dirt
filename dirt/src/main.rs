@@ -5,9 +5,10 @@ use aya::{
     Ebpf,
 };
 use clap::Parser;
-use dirt_common::Event;
+use dirt_common::{Event, EventType};
 #[rustfmt::skip]
 use log::{debug, info, warn};
+use serde::Serialize;
 use tokio::{io::unix::AsyncFd, signal, task};
 
 mod error;
@@ -19,6 +20,14 @@ struct Opt {
     pid: Option<i32>,
     #[clap(long)]
     debug: bool,
+}
+
+#[derive(Serialize)]
+struct SerializableEvent<'a> {
+    event: EventType,
+    src_path: &'a str,
+    #[serde(skip_serializing_if = "str::is_empty")]
+    tgt_path: &'a str,
 }
 
 #[tokio::main]
@@ -84,7 +93,17 @@ async fn main() -> anyhow::Result<()> {
             while let Some(record) = ring_buf_mut.next() {
                 let ptr = record.as_ptr() as *const Event;
                 let event = unsafe { ptr.read_unaligned() };
-                let json = serde_json::to_string_pretty(&event).unwrap();
+
+                let src_path_len = event.src_path.iter().position(|&b| b == 0).unwrap_or(event.src_path.len());
+                let tgt_path_len = event.tgt_path.iter().position(|&b| b == 0).unwrap_or(event.tgt_path.len());
+
+                let serializable_event = SerializableEvent {
+                    event: event.event,
+                    src_path: core::str::from_utf8(&event.src_path[..src_path_len]).unwrap(),
+                    tgt_path: core::str::from_utf8(&event.tgt_path[..tgt_path_len]).unwrap(),
+                };
+
+                let json = serde_json::to_string_pretty(&serializable_event).unwrap();
                 println!("{}", json);
             }
             guard.clear_ready();

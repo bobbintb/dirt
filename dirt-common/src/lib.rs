@@ -14,13 +14,10 @@ pub enum EventType {
     Create,
 }
 
-#[cfg_attr(feature = "user", derive(Serialize))]
 #[derive(Debug, Copy, Clone)]
 #[repr(C)]
 pub struct Event {
     pub event: EventType,
-    #[cfg_attr(feature = "user", serde(with = "serde_bytes"))]
     pub src_path: [u8; MAX_PATH_SIZE],
-    #[cfg_attr(feature = "user", serde(with = "serde_bytes"))]
     pub tgt_path: [u8; MAX_PATH_SIZE],
 }
