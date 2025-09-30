@@ -35,13 +35,7 @@ fn try_dirt(ctx: ProbeContext) -> Result<u32, u32> {
             }
         }
     };
-    let path = match core::str::from_utf8(path_bytes) {
-        Ok(s) => s,
-        Err(_) => {
-            info!(&ctx, "path is not valid utf8");
-            return Err(1);
-        }
-    };
+    let path = unsafe { core::str::from_utf8_unchecked(path_bytes) };
     info!(&ctx, "shfs_unlink: path={}", path);
     Ok(0)
 }
