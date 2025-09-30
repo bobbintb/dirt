@@ -11,13 +11,18 @@ mod shfs;
 struct Opt {
     #[clap(short, long)]
     pid: Option<i32>,
+    #[clap(long)]
+    debug: bool,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let opt = Opt::parse();
 
-    env_logger::init();
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or(if opt.debug { "debug" } else { "info" }),
+    )
+    .init();
 
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
@@ -69,7 +74,7 @@ async fn main() -> anyhow::Result<()> {
             });
         }
     }
-    let Opt { pid } = opt;
+    let Opt { pid, .. } = opt;
     let program: &mut UProbe = ebpf.program_mut("dirt").unwrap().try_into()?;
     program.load()?;
     program.attach(unlink_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
