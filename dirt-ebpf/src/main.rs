@@ -13,7 +13,8 @@ pub fn dirt(ctx: ProbeContext) -> u32 {
 }
 
 fn try_dirt(ctx: ProbeContext) -> Result<u32, u32> {
-    info!(&ctx, "function 0xdf6a called by /usr/libexec/unraid/shfs");
+    let path_ptr: u64 = ctx.arg(0).ok_or(1u32)?;
+    info!(&ctx, "shfs_unlink: path_ptr={:x}", path_ptr);
     Ok(0)
 }
 
