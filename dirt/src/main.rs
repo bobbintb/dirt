@@ -4,6 +4,9 @@ use clap::Parser;
 use log::{debug, warn};
 use tokio::signal;
 
+mod error;
+mod shfs;
+
 #[derive(Debug, Parser)]
 struct Opt {
     #[clap(short, long)]
@@ -26,6 +29,20 @@ async fn main() -> anyhow::Result<()> {
     if ret != 0 {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
+
+    let functions_to_find = ["shfs_unlink"];
+    let offsets = match shfs::get_function_offsets(&functions_to_find) {
+        Ok(offsets) => offsets,
+        Err(e) => {
+            eprintln!("Error finding function offsets: {}", e);
+            return Err(anyhow::anyhow!("Failed to get function offsets"));
+        }
+    };
+
+    let unlink_offset = *offsets.get("shfs_unlink").ok_or_else(|| {
+        anyhow::anyhow!("Offset for 'shfs_unlink' not found in the returned map")
+    })?;
+    debug!("Found offset for shfs_unlink: {:#x}", unlink_offset);
 
     // This will include your eBPF object file as raw bytes at compile-time and load it at
     // runtime. This approach is recommended for most real-world use cases. If you would
@@ -55,7 +72,7 @@ async fn main() -> anyhow::Result<()> {
     let Opt { pid } = opt;
     let program: &mut UProbe = ebpf.program_mut("dirt").unwrap().try_into()?;
     program.load()?;
-    program.attach("0xdf6a", "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+    program.attach(unlink_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
     let ctrl_c = signal::ctrl_c();
     println!("Waiting for Ctrl-C...");

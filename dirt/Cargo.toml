@@ -22,6 +22,10 @@ tokio = { workspace = true, features = [
     "signal",
 ] }
 clap = { workspace = true, features = ["derive"] }
+elf = "0.7"
+iced-x86 = "1.17.0"
+thiserror = "1.0"
+
 [build-dependencies]
 anyhow = { workspace = true }
 aya-build = { workspace = true }
