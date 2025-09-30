@@ -33,7 +33,6 @@ fn try_dirt(ctx: ProbeContext) -> Result<u32, u32> {
 
         // Write the event data.
         (*event).event = EventType::Unlink;
-        (*event).tgt_path = [0; 4096]; // Zero out the target path.
         bpf_probe_read_user_str_bytes(
             path_ptr as *const u8,
             &mut (*event).src_path,
