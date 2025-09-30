@@ -4,13 +4,17 @@
 use aya_ebpf::{
     helpers::bpf_probe_read_user_str_bytes,
     macros::{map, uprobe},
-    maps::PerCpuArray,
+    maps::{PerCpuArray, RingBuf},
     programs::ProbeContext,
 };
-use aya_log_ebpf::info;
+
+use dirt_common::{Event, EventType};
 
 #[map]
-static mut BUF: PerCpuArray<[u8; 4096]> = PerCpuArray::with_max_entries(1, 0);
+static mut EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0); // 256 KB
+
+#[map]
+static mut SCRATCH: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
 
 #[uprobe]
 pub fn dirt(ctx: ProbeContext) -> u32 {
@@ -23,20 +27,22 @@ pub fn dirt(ctx: ProbeContext) -> u32 {
 fn try_dirt(ctx: ProbeContext) -> Result<u32, u32> {
     let path_ptr: u64 = ctx.arg(0).ok_or(1u32)?;
 
-    let ptr = unsafe { (*(&raw mut BUF)).get_ptr_mut(0) }.ok_or(1u32)?;
-    let buf = unsafe { &mut *ptr };
+    unsafe {
+        // Get a mutable pointer to the scratch buffer.
+        let event = (*(&raw mut SCRATCH)).get_ptr_mut(0).ok_or(1u32)?;
 
-    let path_bytes = unsafe {
-        match bpf_probe_read_user_str_bytes(path_ptr as *const u8, buf) {
-            Ok(path) => path,
-            Err(e) => {
-                info!(&ctx, "error reading path: {}", e);
-                return Err(1);
-            }
-        }
-    };
-    let path = unsafe { core::str::from_utf8_unchecked(path_bytes) };
-    info!(&ctx, "shfs_unlink: path={}", path);
+        // Write the event data.
+        (*event).event = EventType::Unlink;
+        bpf_probe_read_user_str_bytes(
+            path_ptr as *const u8,
+            &mut (*event).src_path,
+        )
+        .map_err(|e| e as u32)?;
+
+        // Send the event to the ring buffer.
+        let _ = (*(&raw mut EVENTS)).output(&*event, 0);
+    }
+
     Ok(0)
 }
 

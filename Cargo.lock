@@ -277,6 +277,7 @@ dependencies = [
  "aya",
  "aya-build",
  "aya-log",
+ "bytes",
  "clap",
  "dirt-common",
  "dirt-ebpf",
@@ -285,6 +286,8 @@ dependencies = [
  "iced-x86",
  "libc",
  "log",
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -294,6 +297,8 @@ name = "dirt-common"
 version = "0.1.0"
 dependencies = [
  "aya",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
