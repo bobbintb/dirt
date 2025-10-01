@@ -103,6 +103,18 @@ async fn main() -> anyhow::Result<()> {
     create_program.load()?;
     let _create_link = create_program.attach(create_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
+    let uretprobe_unlink_program: &mut UProbe = ebpf.program_mut("uretprobe_unlink").unwrap().try_into()?;
+    uretprobe_unlink_program.load()?;
+    let _uretprobe_unlink_link = uretprobe_unlink_program.attach(unlink_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
+    let uretprobe_rename_program: &mut UProbe = ebpf.program_mut("uretprobe_rename").unwrap().try_into()?;
+    uretprobe_rename_program.load()?;
+    let _uretprobe_rename_link = uretprobe_rename_program.attach(rename_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
+    let uretprobe_create_program: &mut UProbe = ebpf.program_mut("uretprobe_create").unwrap().try_into()?;
+    uretprobe_create_program.load()?;
+    let _uretprobe_create_link = uretprobe_create_program.attach(create_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
     task::spawn(async move {
         info!("Listening for events...");
         let mut async_fd = AsyncFd::with_interest(ring_buf, tokio::io::Interest::READABLE).unwrap();
