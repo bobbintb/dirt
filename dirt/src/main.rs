@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
 
-    let functions_to_find = ["shfs_unlink"];
+    let functions_to_find = ["shfs_unlink", "shfs_rename", "shfs_create"];
     let offsets = match shfs::get_function_offsets(&functions_to_find) {
         Ok(offsets) => offsets,
         Err(e) => {
@@ -63,6 +63,16 @@ async fn main() -> anyhow::Result<()> {
         anyhow::anyhow!("Offset for 'shfs_unlink' not found in the returned map")
     })?;
     debug!("Found offset for shfs_unlink: {:#x}", unlink_offset);
+
+    let rename_offset = *offsets.get("shfs_rename").ok_or_else(|| {
+        anyhow::anyhow!("Offset for 'shfs_rename' not found in the returned map")
+    })?;
+    debug!("Found offset for shfs_rename: {:#x}", rename_offset);
+
+    let create_offset = *offsets.get("shfs_create").ok_or_else(|| {
+        anyhow::anyhow!("Offset for 'shfs_create' not found in the returned map")
+    })?;
+    debug!("Found offset for shfs_create: {:#x}", create_offset);
 
     // This will include your eBPF object file as raw bytes at compile-time and load it at
     // runtime. This approach is recommended for most real-world use cases. If you would
@@ -80,9 +90,18 @@ async fn main() -> anyhow::Result<()> {
     let ring_buf = RingBuf::try_from(ebpf.take_map("EVENTS").ok_or_else(|| anyhow::anyhow!("EVENTS map not found"))?)?;
 
     let Opt { pid, .. } = opt;
-    let program: &mut UProbe = ebpf.program_mut("dirt").unwrap().try_into()?;
-    program.load()?;
-    let _link = program.attach(unlink_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
+    let unlink_program: &mut UProbe = ebpf.program_mut("uprobe_unlink").unwrap().try_into()?;
+    unlink_program.load()?;
+    let _unlink_link = unlink_program.attach(unlink_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
+    let rename_program: &mut UProbe = ebpf.program_mut("uprobe_rename").unwrap().try_into()?;
+    rename_program.load()?;
+    let _rename_link = rename_program.attach(rename_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
+    let create_program: &mut UProbe = ebpf.program_mut("uprobe_create").unwrap().try_into()?;
+    create_program.load()?;
+    let _create_link = create_program.attach(create_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
     task::spawn(async move {
         info!("Listening for events...");
