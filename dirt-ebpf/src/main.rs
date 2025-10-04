@@ -8,7 +8,10 @@ use aya_ebpf::{
     programs::{ProbeContext, RetProbeContext},
 };
 
-use dirt_common::{Event, EventType};
+use dirt_common::{Event, EventType, ShareName};
+
+#[map]
+static mut WHITELIST: HashMap<ShareName, u8> = HashMap::with_max_entries(1024, 0);
 
 #[map]
 static mut EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0); // 256 KB
@@ -18,6 +21,9 @@ static mut CALLS: HashMap<u64, Event> = HashMap::with_max_entries(1024, 0);
 
 #[map]
 static mut SCRATCH: PerCpuArray<Event> = PerCpuArray::with_max_entries(1, 0);
+
+#[map]
+static mut SHARE_SCRATCH: PerCpuArray<ShareName> = PerCpuArray::with_max_entries(1, 0);
 
 #[uprobe]
 pub fn uprobe_unlink(ctx: ProbeContext) -> u32 {
@@ -96,19 +102,64 @@ pub fn uretprobe_rename(ctx: RetProbeContext) -> u32 {
     }
 }
 
+fn get_share_name(path: &[u8], share: &mut ShareName) -> Result<(), u32> {
+    // Clear the buffer first to ensure no stale data
+    for byte in share.iter_mut() {
+        *byte = 0;
+    }
+
+    let mut i = 0;
+    let mut j = 0;
+
+    // Skip leading '/'
+    if path.get(0) == Some(&b'/') {
+        i = 1;
+    }
+
+    // Copy until next '/' or null terminator or end of path
+    while i < path.len() {
+        let c = match path.get(i) {
+            Some(&c) => c,
+            None => break,
+        };
+        if c == 0 || c == b'/' {
+            break;
+        }
+        // Check bounds before writing
+        if j < 255 {
+            share[j] = c;
+            j += 1;
+        } else {
+            break;
+        }
+        i += 1;
+    }
+
+    Ok(())
+}
+
+
 fn try_uretprobe_handler(ctx: RetProbeContext) -> Result<u32, u32> {
-    let ret = ctx.ret::<i32>().ok_or(1u32)?;
     let pid_tgid = bpf_get_current_pid_tgid();
-    let event = unsafe { (*(&raw mut CALLS)).get(&pid_tgid).ok_or(1u32)? };
+    let event_ptr = unsafe { (*(&raw mut CALLS)).get(&pid_tgid) };
+
+    // Always remove the entry from the map
+    unsafe {
+        let _ = (*(&raw mut CALLS)).remove(&pid_tgid);
+    }
+
+    let event = event_ptr.ok_or(1u32)?;
+    let ret = ctx.ret::<i32>().ok_or(1u32)?;
 
     if ret == 0 {
         unsafe {
-            let _ = (*(&raw mut EVENTS)).output(&*event, 0);
-        }
-    }
+            let share_name_buf = (*(&raw mut SHARE_SCRATCH)).get_ptr_mut(0).ok_or(1u32)?;
+            get_share_name(&(*event).src_path, &mut *share_name_buf)?;
 
-    unsafe {
-        let _ = (*(&raw mut CALLS)).remove(&pid_tgid);
+            if (*(&raw mut WHITELIST)).get(&*share_name_buf).is_some() {
+                let _ = (*(&raw mut EVENTS)).output(&*event, 0);
+            }
+        }
     }
 
     Ok(0)

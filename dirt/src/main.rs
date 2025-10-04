@@ -1,11 +1,11 @@
 use aya::{
     include_bytes_aligned,
-    maps::RingBuf,
+    maps::{HashMap, RingBuf},
     programs::UProbe,
     Ebpf,
 };
 use clap::Parser;
-use dirt_common::{Event, EventType};
+use dirt_common::{Event, EventType, ShareName, MAX_SHARE_LEN};
 #[rustfmt::skip]
 use log::{debug, info, warn};
 use serde::Serialize;
@@ -85,6 +85,20 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
         // This can happen if you remove all log statements from your eBPF program.
         warn!("failed to initialize eBPF logger: {e}");
+    }
+
+    let mut whitelist: HashMap<_, ShareName, u8> =
+        HashMap::try_from(ebpf.take_map("WHITELIST").ok_or_else(|| anyhow::anyhow!("WHITELIST map not found"))?)?;
+
+    // Hardcoded list of shares to whitelist
+    let shares_to_whitelist = vec!["users", "system", "isos"];
+
+    for share in shares_to_whitelist {
+        let mut share_bytes = [0u8; MAX_SHARE_LEN];
+        let len = core::cmp::min(share.len(), MAX_SHARE_LEN);
+        share_bytes[..len].copy_from_slice(share.as_bytes());
+        whitelist.insert(share_bytes, 0, 0)?;
+        info!("Whitelisted share: {}", share);
     }
 
     let ring_buf = RingBuf::try_from(ebpf.take_map("EVENTS").ok_or_else(|| anyhow::anyhow!("EVENTS map not found"))?)?;

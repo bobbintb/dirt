@@ -4,6 +4,9 @@
 use serde::Serialize;
 
 pub const MAX_PATH_SIZE: usize = 4096;
+pub const MAX_SHARE_LEN: usize = 256;
+
+pub type ShareName = [u8; MAX_SHARE_LEN];
 
 #[cfg_attr(feature = "user", derive(Serialize))]
 #[derive(Debug, Copy, Clone)]
