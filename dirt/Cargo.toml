@@ -29,6 +29,7 @@ clap = { workspace = true, features = ["derive"] }
 elf = "0.7"
 iced-x86 = "1.17.0"
 thiserror = "1.0"
+toml = { workspace = true }
 
 [build-dependencies]
 anyhow = { workspace = true }

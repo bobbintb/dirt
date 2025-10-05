@@ -13,6 +13,7 @@ use tokio::{io::unix::AsyncFd, signal, task};
 
 mod error;
 mod shfs;
+mod settings;
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -87,13 +88,24 @@ async fn main() -> anyhow::Result<()> {
         warn!("failed to initialize eBPF logger: {e}");
     }
 
+    let settings = match settings::load_settings() {
+        Ok(settings) => settings,
+        Err(e) => {
+            log::error!("Failed to load settings: {}", e);
+            return Err(e);
+        }
+    };
+
+    if settings.share.is_empty() {
+        let err_msg = "Configuration file is invalid or `share` list is empty.";
+        log::error!("{}", err_msg);
+        return Err(anyhow::anyhow!(err_msg));
+    }
+
     let mut whitelist: HashMap<_, ShareName, u8> =
         HashMap::try_from(ebpf.take_map("WHITELIST").ok_or_else(|| anyhow::anyhow!("WHITELIST map not found"))?)?;
 
-    // Hardcoded list of shares to whitelist
-    let shares_to_whitelist = vec!["users", "system", "isos"];
-
-    for share in shares_to_whitelist {
+    for share in &settings.share {
         let mut share_bytes = [0u8; MAX_SHARE_LEN];
         let len = core::cmp::min(share.len(), MAX_SHARE_LEN);
         share_bytes[..len].copy_from_slice(share.as_bytes());
