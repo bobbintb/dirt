@@ -154,9 +154,19 @@ fn try_uretprobe_handler(ctx: RetProbeContext) -> Result<u32, u32> {
     if ret == 0 {
         unsafe {
             let share_name_buf = (*(&raw mut SHARE_SCRATCH)).get_ptr_mut(0).ok_or(1u32)?;
-            get_share_name(&(*event).src_path, &mut *share_name_buf)?;
 
-            if (*(&raw mut WHITELIST)).get(&*share_name_buf).is_some() {
+            // Check the source path first.
+            get_share_name(&(*event).src_path, &mut *share_name_buf)?;
+            let src_whitelisted = (*(&raw mut WHITELIST)).get(&*share_name_buf).is_some();
+
+            // If it's a rename event, check the target path.
+            let mut tgt_whitelisted = false;
+            if matches!((*event).event, EventType::Rename) {
+                get_share_name(&(*event).tgt_path, &mut *share_name_buf)?;
+                tgt_whitelisted = (*(&raw mut WHITELIST)).get(&*share_name_buf).is_some();
+            }
+
+            if src_whitelisted || tgt_whitelisted {
                 let _ = (*(&raw mut EVENTS)).output(&*event, 0);
             }
         }
