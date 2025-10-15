@@ -30,8 +30,9 @@ struct SplitPath<'a> {
 }
 
 #[derive(Serialize)]
-struct SerializableEvent<'a> {
+struct JsonEvent<'a> {
     event: EventType,
+    db_event: &'a str,
     src: SplitPath<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tgt: Option<SplitPath<'a>>,
@@ -184,8 +185,38 @@ async fn main() -> anyhow::Result<()> {
                     })
                 };
 
-                let serializable_event = SerializableEvent {
+                let db_event = match event.event {
+                    EventType::Create => "upsert",
+                    EventType::Unlink => "remove",
+                    EventType::Rename => {
+                        let src_in_whitelist = settings.share.iter().any(|s| s == src_share);
+                        let tgt_in_whitelist = if let Some(ref tgt) = tgt {
+                            settings.share.iter().any(|s| s == tgt.share)
+                        } else {
+                            false
+                        };
+
+                        if !src_in_whitelist && tgt_in_whitelist {
+                            "upsert"
+                        } else if src_in_whitelist && tgt_in_whitelist {
+                            "rename"
+                        } else if src_in_whitelist && !tgt_in_whitelist {
+                            "remove"
+                        } else {
+                            // This case should not be reachable due to eBPF filtering
+                            warn!("Unfiltered rename event received: src_share={}, tgt_share={:?}", src_share, tgt.as_ref().map(|t| t.share));
+                            continue;
+                        }
+                    },
+                    _ => {
+                        // All event types are handled, but this makes the match exhaustive
+                        continue;
+                    }
+                };
+
+                let json_event = JsonEvent {
                     event: event.event,
+                    db_event,
                     src: SplitPath {
                         share: src_share,
                         relative_path: src_relative_path,
@@ -193,8 +224,10 @@ async fn main() -> anyhow::Result<()> {
                     tgt,
                 };
 
-                let json = serde_json::to_string_pretty(&serializable_event).unwrap();
-                println!("{}", json);
+                match serde_json::to_string_pretty(&json_event) {
+                    Ok(json) => println!("{}", json),
+                    Err(e) => warn!("Failed to serialize event: {}", e),
+                }
             }
             guard.clear_ready();
         }
