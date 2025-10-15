@@ -8,6 +8,7 @@ use clap::Parser;
 use dirt_common::{Event, EventType, ShareName, MAX_SHARE_LEN};
 #[rustfmt::skip]
 use log::{debug, info, warn};
+use redis::AsyncCommands;
 use serde::Serialize;
 use tokio::{io::unix::AsyncFd, signal, task};
 
@@ -157,6 +158,9 @@ async fn main() -> anyhow::Result<()> {
     uretprobe_create_program.load()?;
     let _uretprobe_create_link = uretprobe_create_program.attach(create_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
+    let client = redis::Client::open("redis://127.0.0.1/")?;
+    let mut con = client.get_async_connection().await?;
+
     task::spawn(async move {
         info!("Listening for events...");
         let mut async_fd = AsyncFd::with_interest(ring_buf, tokio::io::Interest::READABLE).unwrap();
@@ -167,11 +171,19 @@ async fn main() -> anyhow::Result<()> {
                 let ptr = record.as_ptr() as *const Event;
                 let event = unsafe { ptr.read_unaligned() };
 
-                let src_path_len = event.src_path.iter().position(|&b| b == 0).unwrap_or(event.src_path.len());
+                let src_path_len = event
+                    .src_path
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(event.src_path.len());
                 let src_path = core::str::from_utf8(&event.src_path[..src_path_len]).unwrap();
                 let (src_share, src_relative_path) = split_path(src_path);
 
-                let tgt_path_len = event.tgt_path.iter().position(|&b| b == 0).unwrap_or(event.tgt_path.len());
+                let tgt_path_len = event
+                    .tgt_path
+                    .iter()
+                    .position(|&b| b == 0)
+                    .unwrap_or(event.tgt_path.len());
                 let tgt_path = core::str::from_utf8(&event.tgt_path[..tgt_path_len]).unwrap();
 
                 let tgt = if tgt_path.is_empty() {
@@ -193,8 +205,13 @@ async fn main() -> anyhow::Result<()> {
                     tgt,
                 };
 
-                let json = serde_json::to_string_pretty(&serializable_event).unwrap();
-                println!("{}", json);
+                let json = serde_json::to_string(&serializable_event).unwrap();
+                match con.rpush("dirt-events", json).await {
+                    Ok(()) => {}
+                    Err(e) => {
+                        log::error!("Failed to send event to Redis: {}", e);
+                    }
+                }
             }
             guard.clear_ready();
         }
