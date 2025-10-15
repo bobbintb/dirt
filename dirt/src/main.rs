@@ -24,11 +24,27 @@ struct Opt {
 }
 
 #[derive(Serialize)]
+struct SplitPath<'a> {
+    share: &'a str,
+    relative_path: &'a str,
+}
+
+#[derive(Serialize)]
 struct SerializableEvent<'a> {
     event: EventType,
-    src_path: &'a str,
-    #[serde(skip_serializing_if = "str::is_empty")]
-    tgt_path: &'a str,
+    src: SplitPath<'a>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tgt: Option<SplitPath<'a>>,
+}
+
+// Returns a tuple of (share, relative_path)
+fn split_path(path: &str) -> (&str, &str) {
+    let path = path.trim_start_matches('/');
+    if let Some(index) = path.find('/') {
+        (&path[..index], &path[index + 1..])
+    } else {
+        (path, "")
+    }
 }
 
 #[tokio::main]
@@ -152,12 +168,29 @@ async fn main() -> anyhow::Result<()> {
                 let event = unsafe { ptr.read_unaligned() };
 
                 let src_path_len = event.src_path.iter().position(|&b| b == 0).unwrap_or(event.src_path.len());
+                let src_path = core::str::from_utf8(&event.src_path[..src_path_len]).unwrap();
+                let (src_share, src_relative_path) = split_path(src_path);
+
                 let tgt_path_len = event.tgt_path.iter().position(|&b| b == 0).unwrap_or(event.tgt_path.len());
+                let tgt_path = core::str::from_utf8(&event.tgt_path[..tgt_path_len]).unwrap();
+
+                let tgt = if tgt_path.is_empty() {
+                    None
+                } else {
+                    let (tgt_share, tgt_relative_path) = split_path(tgt_path);
+                    Some(SplitPath {
+                        share: tgt_share,
+                        relative_path: tgt_relative_path,
+                    })
+                };
 
                 let serializable_event = SerializableEvent {
                     event: event.event,
-                    src_path: core::str::from_utf8(&event.src_path[..src_path_len]).unwrap(),
-                    tgt_path: core::str::from_utf8(&event.tgt_path[..tgt_path_len]).unwrap(),
+                    src: SplitPath {
+                        share: src_share,
+                        relative_path: src_relative_path,
+                    },
+                    tgt,
                 };
 
                 let json = serde_json::to_string_pretty(&serializable_event).unwrap();
