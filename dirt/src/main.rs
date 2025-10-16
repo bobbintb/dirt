@@ -236,7 +236,7 @@ async fn main() -> anyhow::Result<()> {
                     tgt,
                 };
 
-                let json = serde_json::to_string(&serializable_event).unwrap();
+                let json = serde_json::to_string(&json_event).unwrap();
                 match con.rpush("dirt-events", json).await {
                     Ok(()) => {}
                     Err(e) => {
