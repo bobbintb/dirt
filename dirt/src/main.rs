@@ -32,8 +32,8 @@ struct SplitPath<'a> {
 
 #[derive(Serialize)]
 struct JsonEvent<'a> {
-    event: EventType,
-    db_event: &'a str,
+    fs_event: EventType,
+    event: &'a str,
     src: SplitPath<'a>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tgt: Option<SplitPath<'a>>,
@@ -227,8 +227,8 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 let json_event = JsonEvent {
-                    event: event.event,
-                    db_event,
+                    fs_event: event.event,
+                    event: db_event,
                     src: SplitPath {
                         share: src_share,
                         relative_path: src_relative_path,
