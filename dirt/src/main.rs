@@ -69,7 +69,16 @@ async fn main() -> anyhow::Result<()> {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
 
-    let functions_to_find = ["shfs_unlink", "shfs_rename", "shfs_create"];
+    let functions_to_find = [
+        "shfs_unlink",
+        "shfs_rename",
+        "shfs_create",
+        "shfs_write_buf",
+        "shfs_truncate",
+        "shfs_fallocate",
+        "shfs_flush",
+        "shfs_release",
+    ];
     let offsets = match shfs::get_function_offsets(&functions_to_find) {
         Ok(offsets) => offsets,
         Err(e) => {
@@ -92,6 +101,31 @@ async fn main() -> anyhow::Result<()> {
         anyhow::anyhow!("Offset for 'shfs_create' not found in the returned map")
     })?;
     debug!("Found offset for shfs_create: {:#x}", create_offset);
+
+    let write_buf_offset = *offsets
+        .get("shfs_write_buf")
+        .ok_or_else(|| anyhow::anyhow!("Offset for 'shfs_write_buf' not found"))?;
+    debug!("Found offset for shfs_write_buf: {:#x}", write_buf_offset);
+
+    let truncate_offset = *offsets
+        .get("shfs_truncate")
+        .ok_or_else(|| anyhow::anyhow!("Offset for 'shfs_truncate' not found"))?;
+    debug!("Found offset for shfs_truncate: {:#x}", truncate_offset);
+
+    let fallocate_offset = *offsets
+        .get("shfs_fallocate")
+        .ok_or_else(|| anyhow::anyhow!("Offset for 'shfs_fallocate' not found"))?;
+    debug!("Found offset for shfs_fallocate: {:#x}", fallocate_offset);
+
+    let flush_offset = *offsets
+        .get("shfs_flush")
+        .ok_or_else(|| anyhow::anyhow!("Offset for 'shfs_flush' not found"))?;
+    debug!("Found offset for shfs_flush: {:#x}", flush_offset);
+
+    let release_offset = *offsets
+        .get("shfs_release")
+        .ok_or_else(|| anyhow::anyhow!("Offset for 'shfs_release' not found"))?;
+    debug!("Found offset for shfs_release: {:#x}", release_offset);
 
     // This will include your eBPF object file as raw bytes at compile-time and load it at
     // runtime. This approach is recommended for most real-world use cases. If you would
@@ -159,6 +193,26 @@ async fn main() -> anyhow::Result<()> {
     uretprobe_create_program.load()?;
     let _uretprobe_create_link = uretprobe_create_program.attach(create_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
+    let write_buf_program: &mut UProbe = ebpf.program_mut("uprobe_write_buf").unwrap().try_into()?;
+    write_buf_program.load()?;
+    let _write_buf_link = write_buf_program.attach(write_buf_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
+    let truncate_program: &mut UProbe = ebpf.program_mut("uprobe_truncate").unwrap().try_into()?;
+    truncate_program.load()?;
+    let _truncate_link = truncate_program.attach(truncate_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
+    let fallocate_program: &mut UProbe = ebpf.program_mut("uprobe_fallocate").unwrap().try_into()?;
+    fallocate_program.load()?;
+    let _fallocate_link = fallocate_program.attach(fallocate_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
+    let flush_program: &mut UProbe = ebpf.program_mut("uprobe_flush").unwrap().try_into()?;
+    flush_program.load()?;
+    let _flush_link = flush_program.attach(flush_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
+    let release_program: &mut UProbe = ebpf.program_mut("uprobe_release").unwrap().try_into()?;
+    release_program.load()?;
+    let _release_link = release_program.attach(release_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
+
     let client = redis::Client::open("redis://127.0.0.1/")?;
     let mut con = client.get_async_connection().await?;
 
@@ -198,7 +252,7 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 let db_event = match event.event {
-                    EventType::Create => "upsert",
+                    EventType::Create | EventType::Modified => "upsert",
                     EventType::Unlink => "remove",
                     EventType::Rename => {
                         let src_in_whitelist = settings.share.iter().any(|s| s == src_share);
@@ -220,10 +274,6 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
                     },
-                    _ => {
-                        // All event types are handled, but this makes the match exhaustive
-                        continue;
-                    }
                 };
 
                 let json_event = JsonEvent {

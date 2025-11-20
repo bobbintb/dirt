@@ -15,6 +15,7 @@ pub enum EventType {
     Unlink,
     Rename,
     Create,
+    Modified,
 }
 
 #[derive(Debug, Copy, Clone)]
