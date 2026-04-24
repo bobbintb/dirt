@@ -220,10 +220,6 @@ async fn main() -> anyhow::Result<()> {
                             continue;
                         }
                     },
-                    _ => {
-                        // All event types are handled, but this makes the match exhaustive
-                        continue;
-                    }
                 };
 
                 let json_event = JsonEvent {
