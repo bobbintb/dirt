@@ -8,13 +8,19 @@ use clap::Parser;
 use dirt_common::{Event, EventType, ShareName, MAX_SHARE_LEN};
 #[rustfmt::skip]
 use log::{debug, info, warn};
-use redis::AsyncCommands;
 use serde::Serialize;
 use tokio::{io::unix::AsyncFd, signal, task};
 
 mod error;
 mod shfs;
 mod settings;
+mod db;
+mod queue;
+mod scanner;
+
+use crate::db::Db;
+use crate::queue::{FsEventJob, Queue};
+use crate::scanner::Scanner;
 
 #[derive(Debug, Parser)]
 struct Opt {
@@ -159,8 +165,18 @@ async fn main() -> anyhow::Result<()> {
     uretprobe_create_program.load()?;
     let _uretprobe_create_link = uretprobe_create_program.attach(create_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
-    let client = redis::Client::open("redis://127.0.0.1/")?;
-    let mut con = client.get_async_connection().await?;
+    // Initialize Database and Queue
+    let db = Db::new("dirt.redb")?;
+    let (queue, _worker_handle) = Queue::new(db.clone());
+
+    // Run initial scan
+    let mut scanner = Scanner::new(queue.clone());
+    for share in &settings.share {
+        let root = format!("/mnt/user/{}", share);
+        if let Err(e) = scanner.scan(&root).await {
+            log::error!("Initial scan of {} failed: {}", root, e);
+        }
+    }
 
     task::spawn(async move {
         info!("Listening for events...");
@@ -222,22 +238,17 @@ async fn main() -> anyhow::Result<()> {
                     },
                 };
 
-                let json_event = JsonEvent {
-                    fs_event: event.event,
-                    event: db_event,
-                    src: SplitPath {
-                        share: src_share,
-                        relative_path: src_relative_path,
-                    },
-                    tgt,
+                // Enqueue job for background processing
+                let job = FsEventJob {
+                    path: format!("/mnt/user/{}", src_path.trim_start_matches('/')),
+                    share: src_share.to_string(),
+                    relative_path: src_relative_path.to_string(),
+                    event_type: db_event.to_string(),
                 };
 
-                let json = serde_json::to_string(&json_event).unwrap();
-                match con.rpush("dirt-events", json).await {
-                    Ok(()) => {}
-                    Err(e) => {
-                        log::error!("Failed to send event to Redis: {}", e);
-                    }
+                match queue.push(job).await {
+                    Ok(_) => debug!("Enqueued job for {}", src_path),
+                    Err(e) => log::error!("Failed to enqueue job: {}", e),
                 }
             }
             guard.clear_ready();

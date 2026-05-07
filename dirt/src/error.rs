@@ -29,4 +29,13 @@ pub enum ShfsError {
 
     #[error("function prologue for reference '{name}' not found")]
     PrologueNotFound { name: String },
+
+    #[error("database error: {0}")]
+    DbError(String),
+
+    #[error("serialization error: {0}")]
+    SerializationError(#[from] bincode::Error),
+
+    #[error("queue error: {0}")]
+    QueueError(String),
 }
