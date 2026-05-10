@@ -58,6 +58,20 @@ async fn main() -> anyhow::Result<()> {
     )
     .init();
 
+    let settings = match settings::load_settings() {
+        Ok(settings) => settings,
+        Err(e) => {
+            log::error!("Failed to load settings: {}", e);
+            return Err(e);
+        }
+    };
+
+    if settings.share.is_empty() {
+        let err_msg = "Configuration file is invalid or `share` list is empty.";
+        log::error!("{}", err_msg);
+        return Err(anyhow::anyhow!(err_msg));
+    }
+
     // Bump the memlock rlimit. This is needed for older kernels that don't use the
     // new memcg based accounting, see https://lwn.net/Articles/837122/
     let rlim = libc::rlimit {
@@ -104,20 +118,6 @@ async fn main() -> anyhow::Result<()> {
     if let Err(e) = aya_log::EbpfLogger::init(&mut ebpf) {
         // This can happen if you remove all log statements from your eBPF program.
         warn!("failed to initialize eBPF logger: {e}");
-    }
-
-    let settings = match settings::load_settings() {
-        Ok(settings) => settings,
-        Err(e) => {
-            log::error!("Failed to load settings: {}", e);
-            return Err(e);
-        }
-    };
-
-    if settings.share.is_empty() {
-        let err_msg = "Configuration file is invalid or `share` list is empty.";
-        log::error!("{}", err_msg);
-        return Err(anyhow::anyhow!(err_msg));
     }
 
     let mut whitelist: HashMap<_, ShareName, u8> =
