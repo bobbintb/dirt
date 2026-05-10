@@ -21,7 +21,7 @@ pub fn load_settings() -> anyhow::Result<Settings> {
                 if let Some(share_list) = section.get("share") {
                     let shares: Vec<String> = share_list
                         .split(',')
-                        .map(|s| s.trim().trim_matches('"').trim().to_string())
+                        .map(|s| s.trim().to_string())
                         .filter(|s| !s.is_empty())
                         .collect();
                     return Ok(Settings { share: shares });
