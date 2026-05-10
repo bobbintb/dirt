@@ -10,6 +10,7 @@ pub fn load_settings() -> anyhow::Result<Settings> {
     let search_paths = [
         PathBuf::from("/etc/dirt/dirt.cfg"),
         PathBuf::from("/boot/config/plugins/dirt/dirt.cfg"),
+        PathBuf::from("/boot/config/plugins/bobbintb.system.dirt/dirt.cfg"),
         env::current_exe()?.parent().unwrap().join("dirt.cfg"),
     ];
 
