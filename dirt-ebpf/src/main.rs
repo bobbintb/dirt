@@ -14,7 +14,7 @@ use dirt_common::{Event, EventType, ShareName};
 static mut WHITELIST: HashMap<ShareName, u8> = HashMap::with_max_entries(1024, 0);
 
 #[map]
-static mut EVENTS: RingBuf = RingBuf::with_byte_size(8 * 1024 * 1024, 0); // 8 MB
+static mut EVENTS: RingBuf = RingBuf::with_byte_size(256 * 1024, 0); // 256 KB
 
 #[map]
 static mut CALLS: HashMap<u64, Event> = HashMap::with_max_entries(1024, 0);
@@ -49,21 +49,13 @@ pub fn uprobe_rename(ctx: ProbeContext) -> u32 {
     }
 }
 
-#[uprobe]
-pub fn uprobe_modify(ctx: ProbeContext) -> u32 {
-    match try_uprobe_handler(ctx, EventType::Modify) {
-        Ok(ret) => ret,
-        Err(ret) => ret,
-    }
-}
-
 fn try_uprobe_handler(ctx: ProbeContext, event_type: EventType) -> Result<u32, u32> {
     unsafe {
         let event = (*(&raw mut SCRATCH)).get_ptr_mut(0).ok_or(1u32)?;
         (*event).event = event_type;
 
         match event_type {
-            EventType::Unlink | EventType::Create | EventType::Modify => {
+            EventType::Unlink | EventType::Create => {
                 let path_ptr: u64 = ctx.arg(0).ok_or(1u32)?;
                 bpf_probe_read_user_str_bytes(path_ptr as *const u8, &mut (*event).src_path)
                     .map_err(|e| e as u32)?;
@@ -88,14 +80,6 @@ fn try_uprobe_handler(ctx: ProbeContext, event_type: EventType) -> Result<u32, u
 
 #[uretprobe]
 pub fn uretprobe_unlink(ctx: RetProbeContext) -> u32 {
-    match try_uretprobe_handler(ctx) {
-        Ok(ret) => ret,
-        Err(ret) => ret,
-    }
-}
-
-#[uretprobe]
-pub fn uretprobe_modify(ctx: RetProbeContext) -> u32 {
     match try_uretprobe_handler(ctx) {
         Ok(ret) => ret,
         Err(ret) => ret,

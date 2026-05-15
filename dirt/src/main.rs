@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
         debug!("remove limit on locked memory failed, ret is: {ret}");
     }
 
-    let functions_to_find = ["shfs_unlink", "shfs_rename", "shfs_create", "shfs_write_buf"];
+    let functions_to_find = ["shfs_unlink", "shfs_rename", "shfs_create"];
     let offsets = match shfs::get_function_offsets(&functions_to_find) {
         Ok(offsets) => offsets,
         Err(e) => {
@@ -107,10 +107,6 @@ async fn main() -> anyhow::Result<()> {
     })?;
     debug!("Found offset for shfs_create: {:#x}", create_offset);
 
-    let modify_offset = *offsets.get("shfs_write_buf").ok_or_else(|| {
-        anyhow::anyhow!("Offset for 'shfs_write_buf' not found in the returned map")
-    })?;
-    debug!("Found offset for shfs_write_buf: {:#x}", modify_offset);
 
     // This will include your eBPF object file as raw bytes at compile-time and load it at
     // runtime. This approach is recommended for most real-world use cases. If you would
@@ -152,9 +148,6 @@ async fn main() -> anyhow::Result<()> {
     create_program.load()?;
     let _create_link = create_program.attach(create_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
-    let modify_program: &mut UProbe = ebpf.program_mut("uprobe_modify").unwrap().try_into()?;
-    modify_program.load()?;
-    let _modify_link = modify_program.attach(modify_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
     let uretprobe_unlink_program: &mut UProbe = ebpf.program_mut("uretprobe_unlink").unwrap().try_into()?;
     uretprobe_unlink_program.load()?;
@@ -168,9 +161,6 @@ async fn main() -> anyhow::Result<()> {
     uretprobe_create_program.load()?;
     let _uretprobe_create_link = uretprobe_create_program.attach(create_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
-    let uretprobe_modify_program: &mut UProbe = ebpf.program_mut("uretprobe_modify").unwrap().try_into()?;
-    uretprobe_modify_program.load()?;
-    let _uretprobe_modify_link = uretprobe_modify_program.attach(modify_offset, "/usr/libexec/unraid/shfs", pid, None /* cookie */)?;
 
     let client = redis::Client::open("redis://127.0.0.1/")?;
     let mut con = client.get_async_connection().await?;
@@ -213,7 +203,7 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 let db_event = match event.event {
-                    EventType::Create | EventType::Modify => "upsert",
+                    EventType::Create => "upsert",
                     EventType::Unlink => "remove",
                     EventType::Rename => {
                         let src_in_whitelist = settings.share.iter().any(|s| s == src_share);
