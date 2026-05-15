@@ -1,5 +1,5 @@
 [package]
-name = "dirt"
+name = "dirt-backend"
 version = "0.0.1"
 edition.workspace = true
 
@@ -50,5 +50,5 @@ aya-build = { workspace = true }
 dirt-ebpf = { path = "../dirt-ebpf" }
 
 [[bin]]
-name = "dirt"
+name = "dirt-backend"
 path = "src/main.rs"

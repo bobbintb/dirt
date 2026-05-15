@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "dirt",
+    "dirt-backend",
     "dirt-common",
     "dirt-ebpf",
 ]
-default-members = ["dirt", "dirt-common"]
+default-members = ["dirt-backend", "dirt-common"]
 
 [workspace.package]
 license = "MIT OR Apache-2.0"

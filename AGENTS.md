@@ -4,7 +4,7 @@ This Agents.md file provides comprehensive guidance for AI agents working with t
 
 ## Project Structure 
 
-- `/dirt`: Rust eBPF user-space code
+- `/dirt-backend`: Rust eBPF user-space code
   - `/src`: Rust eBPF user-space source code
     - `/main.rs`: Main Rust eBPF user-space code
   - `/build.rs`: Build file for user-space code
