@@ -157,17 +157,14 @@ fn try_uretprobe_handler(ctx: RetProbeContext) -> Result<u32, u32> {
 
             // Check the source path first.
             get_share_name(&(*event).src_path, &mut *share_name_buf)?;
-            let src_whitelisted = (*(&raw mut WHITELIST)).get(&*share_name_buf).is_some();
-
-            // If it's a rename event, check the target path.
-            let mut tgt_whitelisted = false;
-            if matches!((*event).event, EventType::Rename) {
-                get_share_name(&(*event).tgt_path, &mut *share_name_buf)?;
-                tgt_whitelisted = (*(&raw mut WHITELIST)).get(&*share_name_buf).is_some();
-            }
-
-            if src_whitelisted || tgt_whitelisted {
+            if (*(&raw mut WHITELIST)).get(&*share_name_buf).is_some() {
                 let _ = (*(&raw mut EVENTS)).output(&*event, 0);
+            } else if matches!((*event).event, EventType::Rename) {
+                // If it's a rename event and source wasn't whitelisted, check the target path.
+                get_share_name(&(*event).tgt_path, &mut *share_name_buf)?;
+                if (*(&raw mut WHITELIST)).get(&*share_name_buf).is_some() {
+                    let _ = (*(&raw mut EVENTS)).output(&*event, 0);
+                }
             }
         }
     }
