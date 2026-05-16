@@ -143,11 +143,6 @@ fn try_uretprobe_handler(ctx: RetProbeContext) -> Result<u32, u32> {
     let pid_tgid = bpf_get_current_pid_tgid();
     let event_ptr = unsafe { (*(&raw mut CALLS)).get(&pid_tgid) };
 
-    // Always remove the entry from the map
-    unsafe {
-        let _ = (*(&raw mut CALLS)).remove(&pid_tgid);
-    }
-
     let event = event_ptr.ok_or(1u32)?;
     let ret = ctx.ret::<i32>().ok_or(1u32)?;
 
@@ -167,6 +162,11 @@ fn try_uretprobe_handler(ctx: RetProbeContext) -> Result<u32, u32> {
                 }
             }
         }
+    }
+
+    // Always remove the entry from the map after processing
+    unsafe {
+        let _ = (*(&raw mut CALLS)).remove(&pid_tgid);
     }
 
     Ok(0)
