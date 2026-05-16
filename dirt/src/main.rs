@@ -227,7 +227,7 @@ async fn main() -> anyhow::Result<()> {
                     },
                 };
 
-                info!("Event: {} src: {}/{} tgt: {:?}",
+                debug!("Event: {} src: {}/{} tgt: {:?}",
                     db_event,
                     src_share,
                     src_relative_path,
