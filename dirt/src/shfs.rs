@@ -1,7 +1,7 @@
 use crate::error::ShfsError;
 use elf::endian::AnyEndian;
 use elf::ElfBytes;
-use iced_x86::{Decoder, DecoderOptions, Instruction, Mnemonic, Register};
+use iced_x86::{Decoder, DecoderOptions};
 use log::{debug, trace};
 use std::collections::HashMap;
 use std::fs;
@@ -134,46 +134,29 @@ impl<'a> ShfsAnalysis<'a> {
             .section_data(&self.text_section)
             .map_err(ShfsError::ElfParseError)?;
 
-        // We only need to decode instructions up to the reference address.
-        let ref_offset_in_text = (ref_vaddr - self.text_section.sh_addr) as usize;
-        let data_to_decode = &text_data
-            .get(..ref_offset_in_text)
-            .ok_or_else(|| ShfsError::PrologueNotFound { name: format!("{:#x}", ref_vaddr) })?;
+        // Virtual address to index in the .text section's data.
+        let ref_index = (ref_vaddr - self.text_section.sh_addr) as usize;
 
-        let mut decoder = Decoder::new(64, data_to_decode, DecoderOptions::AMD);
-        decoder.set_ip(self.text_section.sh_addr);
+        // Pattern for `push rbp; mov rbp, rsp`
+        let prologue_pattern = [0x55, 0x48, 0x89, 0xe5];
 
-        let instructions: Vec<Instruction> = decoder.iter().collect();
-
-        if let Some(prologue_window) = instructions.windows(2).rev().find(|window| {
-            let push_ins = &window[0];
-            let mov_ins = &window[1];
-
-            // Check for `push rbp`
-            let is_push_rbp = push_ins.mnemonic() == Mnemonic::Push
-                && push_ins.op_count() == 1
-                && push_ins.op0_register() == Register::RBP;
-
-            // Check for `mov rbp, rsp`
-            let is_mov_rbp_rsp = mov_ins.mnemonic() == Mnemonic::Mov
-                && mov_ins.op_count() == 2
-                && mov_ins.op0_register() == Register::RBP
-                && mov_ins.op1_register() == Register::RSP;
-
-            is_push_rbp && is_mov_rbp_rsp
-        }) {
-            let prologue_start_ins = &prologue_window[0];
-            debug!(
-                "Found function prologue for ref {:#x} at {:#x}",
-                ref_vaddr,
-                prologue_start_ins.ip()
-            );
-            Ok(prologue_start_ins.ip())
-        } else {
-            Err(ShfsError::PrologueNotFound {
-                name: format!("{:#x}", ref_vaddr),
-            })
+        // Search backwards from the string reference for the prologue pattern.
+        // We look at chunks of 4 bytes.
+        for i in (0..ref_index.saturating_sub(prologue_pattern.len() - 1)).rev() {
+            if &text_data[i..i + 4] == prologue_pattern {
+                let prologue_vaddr = self.text_section.sh_addr + i as u64;
+                debug!(
+                    "Found function prologue for ref {:#x} at {:#x}",
+                    ref_vaddr,
+                    prologue_vaddr
+                );
+                return Ok(prologue_vaddr);
+            }
         }
+
+        Err(ShfsError::PrologueNotFound {
+            name: format!("{:#x}", ref_vaddr),
+        })
     }
 }
 
