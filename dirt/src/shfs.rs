@@ -1,7 +1,7 @@
 use crate::error::ShfsError;
 use elf::endian::AnyEndian;
 use elf::ElfBytes;
-use iced_x86::{Decoder, DecoderOptions};
+use iced_x86::{Decoder, DecoderOptions, Formatter, IntelFormatter};
 use log::{debug, trace};
 use std::collections::HashMap;
 use std::fs;
@@ -127,6 +127,63 @@ impl<'a> ShfsAnalysis<'a> {
         Err(ShfsError::StringRefNotFound { name: format!("{:#x}", string_vaddr) })
     }
 
+    /// Logs the first N instructions of a function.
+    fn log_function_instructions(
+        &self,
+        func_name: &str,
+        func_vaddr: u64,
+        count: usize,
+    ) -> Result<(), ShfsError> {
+        let (text_data, _) = self
+            .elf
+            .section_data(&self.text_section)
+            .map_err(ShfsError::ElfParseError)?;
+
+        if func_vaddr < self.text_section.sh_addr
+            || func_vaddr >= self.text_section.sh_addr + self.text_section.sh_size
+        {
+            return Err(ShfsError::AddressNotLoadable { addr: func_vaddr });
+        }
+
+        let start_index = (func_vaddr - self.text_section.sh_addr) as usize;
+        let data_to_decode = &text_data[start_index..];
+
+        let mut decoder = Decoder::new(64, data_to_decode, DecoderOptions::AMD);
+        decoder.set_ip(func_vaddr);
+
+        let mut formatter = IntelFormatter::new();
+        let mut instruction = iced_x86::Instruction::default();
+
+        for _ in 0..count {
+            if !decoder.can_decode() {
+                break;
+            }
+            decoder.decode_out(&mut instruction);
+
+            let mut output = String::new();
+            formatter.format(&instruction, &mut output);
+
+            let instr_len = instruction.len();
+            let instr_offset = (instruction.ip() - self.text_section.sh_addr) as usize;
+            let instr_bytes = &text_data[instr_offset..instr_offset + instr_len];
+            let hex_bytes = instr_bytes
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<Vec<String>>()
+                .join(" ");
+
+            debug!(
+                "{}: {:#018x} {:<20} {}",
+                func_name,
+                instruction.ip(),
+                hex_bytes,
+                output
+            );
+        }
+
+        Ok(())
+    }
+
     /// Searches backwards from a reference address to find the function prologue.
     fn find_function_prologue_vaddr(&self, ref_vaddr: u64) -> Result<u64, ShfsError> {
         let (text_data, _) = self
@@ -191,6 +248,8 @@ pub fn get_function_offsets(
 
         let func_vaddr = analysis.find_function_prologue_vaddr(ref_vaddr)?;
         debug!("Function start virtual address: {:#x}", func_vaddr);
+
+        analysis.log_function_instructions(func_name, func_vaddr, 10)?;
 
         let func_offset = analysis.vaddr_to_offset(func_vaddr)?;
         debug!("Function file offset: {:#x}", func_offset);
